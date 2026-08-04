@@ -17,6 +17,10 @@ impl Value {
     /// Write this value per the exposition format: `f64::Display` prints `inf`
     /// for infinities, which Prometheus does not accept — this normalizes to
     /// `+Inf` / `-Inf` / `NaN`. Integers are written as plain decimal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`fmt::Error`] if `out` rejects the formatted value.
     pub fn write_prom(&self, out: &mut dyn Write) -> fmt::Result {
         match self {
             Value::U64(v) => write!(out, "{v}"),

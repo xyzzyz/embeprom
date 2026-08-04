@@ -20,7 +20,7 @@ impl Counter {
     /// Increment by 1.
     #[inline]
     pub fn inc(&self) {
-        self.inc_by(1)
+        self.inc_by(1);
     }
 
     /// Increment by `n`.

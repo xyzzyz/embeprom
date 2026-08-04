@@ -481,7 +481,10 @@ mod tests {
         accessor_metrics().calls.inc_by(3);
         assert_eq!(accessor_metrics().calls.get(), 3);
         assert_eq!(accessor_metrics().group_name(), "accessor_test");
-        assert!(core::ptr::eq(accessor_metrics(), &ACCESSOR_METRICS));
+        assert!(core::ptr::eq(
+            accessor_metrics(),
+            &raw const ACCESSOR_METRICS
+        ));
     }
 
     #[test]
@@ -515,7 +518,7 @@ mod tests {
         assert_eq!(
             crate::snapshot()
                 .iter()
-                .filter(|g| core::ptr::addr_eq(**g, &REGISTRATION_METRICS))
+                .filter(|g| core::ptr::addr_eq(**g, &raw const REGISTRATION_METRICS))
                 .count(),
             1
         );
@@ -527,7 +530,7 @@ mod tests {
         assert_eq!(
             crate::snapshot()
                 .iter()
-                .filter(|g| core::ptr::addr_eq(**g, &REGISTRATION_METRICS))
+                .filter(|g| core::ptr::addr_eq(**g, &raw const REGISTRATION_METRICS))
                 .count(),
             1
         );
@@ -570,7 +573,7 @@ mod tests {
         m.queue_depth.set(&["ingress"], 3);
         m.peer_rtt_s.observe(&["ap-1"], 0.2);
 
-        assert_eq!(m.cpu_temp_c.get(), 42.5);
+        assert_eq!(m.cpu_temp_c.get().to_bits(), 42.5_f64.to_bits());
         assert_eq!(m.request_latency_s.count(), 1);
         assert_eq!(m.queue_depth.with(&["ingress"]).get(), 3);
 

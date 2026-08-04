@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(h.bucket(0), 1);
         assert_eq!(h.bucket(1), 1);
         assert_eq!(h.count(), 3);
-        assert_eq!(h.sum(), 3.0);
+        assert_eq!(h.sum().to_bits(), 3.0_f64.to_bits());
     }
 
     #[cfg(feature = "float")]

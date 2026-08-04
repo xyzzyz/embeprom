@@ -62,6 +62,10 @@ impl<const N: usize> Registry<N> {
     /// Register a metric group. Panics if the registry is already at
     /// capacity `N` — registration happens at startup, so failing loudly is
     /// preferable to silently dropping a whole crate's metrics.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the registry already contains `N` distinct groups.
     pub fn register(&self, group: &'static dyn MetricGroup) {
         self.try_register(group)
             .expect("embeprom: registry is full, increase capacity N");
@@ -72,6 +76,11 @@ impl<const N: usize> Registry<N> {
     /// same group (by static identity) more than once is a no-op — this
     /// lets explicit [`register`] calls coexist safely with a group that
     /// also self-registers via [`OnceRegister`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryFull`] if the registry already contains `N`
+    /// distinct groups.
     pub fn try_register(&self, group: &'static dyn MetricGroup) -> Result<(), RegistryFull> {
         critical_section::with(|cs| {
             let mut groups = self.groups.borrow_ref_mut(cs);
@@ -190,6 +199,13 @@ fn active_registry() -> &'static dyn RegistrationTarget {
 /// installed capacity must not exceed [`crate::MAX_GROUPS`]; larger custom
 /// registries can still be used directly with
 /// [`crate::Renderer::from_registry`].
+///
+/// # Errors
+///
+/// Returns [`InstallRegistryError::AlreadyInUse`] if a registry is already
+/// installed or global registration has begun. Returns
+/// [`InstallRegistryError::CapacityExceedsMaxGroups`] if `N` exceeds
+/// [`crate::MAX_GROUPS`].
 pub fn install_registry<const N: usize>(
     registry: &'static Registry<N>,
 ) -> Result<(), InstallRegistryError> {
@@ -221,14 +237,23 @@ pub fn install_registry<const N: usize>(
 /// access (see [`OnceRegister`]), so calling this explicitly is optional for
 /// them. Explicit registration makes every metric visible from boot and turns
 /// insufficient registry capacity into an immediate startup failure.
+///
+/// # Panics
+///
+/// Panics if the active global registry is already at capacity.
 pub fn register(group: &'static dyn MetricGroup) {
     active_registry()
         .try_register(group)
-        .expect("embeprom: registry is full, increase its capacity")
+        .expect("embeprom: registry is full, increase its capacity");
 }
 
 /// Register a metric group with the global registry, without panicking if
 /// the registry is full.
+///
+/// # Errors
+///
+/// Returns [`RegistryFull`] if the active global registry is already at
+/// capacity.
 pub fn try_register(group: &'static dyn MetricGroup) -> Result<(), RegistryFull> {
     active_registry().try_register(group)
 }
@@ -450,7 +475,7 @@ mod tests {
         assert_eq!(
             snapshot()
                 .iter()
-                .filter(|g| core::ptr::addr_eq(**g, &C))
+                .filter(|g| core::ptr::addr_eq(**g, &raw const C))
                 .count(),
             1
         );
@@ -466,7 +491,7 @@ mod tests {
         assert_eq!(
             snapshot()
                 .iter()
-                .filter(|g| core::ptr::addr_eq(**g, &D))
+                .filter(|g| core::ptr::addr_eq(**g, &raw const D))
                 .count(),
             1
         );

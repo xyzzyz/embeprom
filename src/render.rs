@@ -386,6 +386,120 @@ fn next_step(step: Step, desc: &MetricDesc) -> Step {
     }
 }
 
+fn render_bucket<const H: usize>(
+    line: &mut dyn Write,
+    desc: &MetricDesc,
+    snapshot: &HistogramSnapshot<H>,
+    histogram_cumulative: &mut u64,
+    series: Option<usize>,
+    bucket: usize,
+) -> fmt::Result {
+    write_full_name(line, desc, "_bucket")?;
+    line.write_char('{')?;
+    let (bound, bucket_delta) = match &desc.metric {
+        MetricRef::Histogram { h } => {
+            debug_assert!(series.is_none());
+            (h.bound(bucket), snapshot.scalar_bucket(*h, bucket))
+        }
+        MetricRef::HistogramVec { h } => {
+            let series = series.expect("embeprom: HistogramVec Bucket step requires Some(series)");
+            h.write_labels(series, line)?;
+            line.write_char(',')?;
+            (h.bound(bucket), snapshot.vec_bucket(*h, series, bucket))
+        }
+        _ => unreachable!("embeprom: Bucket step on non-histogram metric"),
+    };
+    *histogram_cumulative = if bucket == 0 {
+        bucket_delta
+    } else {
+        histogram_cumulative.wrapping_add(bucket_delta)
+    };
+    line.write_str("le=\"")?;
+    bound.write_prom(line)?;
+    line.write_str("\"} ")?;
+    write!(line, "{histogram_cumulative}")?;
+    line.write_char('\n')
+}
+
+fn render_infinite_bucket<const H: usize>(
+    line: &mut dyn Write,
+    desc: &MetricDesc,
+    snapshot: &HistogramSnapshot<H>,
+    series: Option<usize>,
+) -> fmt::Result {
+    write_full_name(line, desc, "_bucket")?;
+    line.write_char('{')?;
+    let total = match &desc.metric {
+        MetricRef::Histogram { h, .. } => {
+            debug_assert!(series.is_none());
+            snapshot.scalar_count(*h)
+        }
+        MetricRef::HistogramVec { h, .. } => {
+            let series =
+                series.expect("embeprom: HistogramVec BucketInf step requires Some(series)");
+            h.write_labels(series, line)?;
+            line.write_char(',')?;
+            snapshot.vec_count(*h, series)
+        }
+        _ => unreachable!("embeprom: BucketInf step on non-histogram metric"),
+    };
+    line.write_str("le=\"+Inf\"} ")?;
+    write!(line, "{total}")?;
+    line.write_char('\n')
+}
+
+fn render_histogram_sum<const H: usize>(
+    line: &mut dyn Write,
+    desc: &MetricDesc,
+    snapshot: &HistogramSnapshot<H>,
+    series: Option<usize>,
+) -> fmt::Result {
+    write_full_name(line, desc, "_sum")?;
+    let value = match &desc.metric {
+        MetricRef::Histogram { h, .. } => {
+            debug_assert!(series.is_none());
+            snapshot.scalar_sum(*h)
+        }
+        MetricRef::HistogramVec { h, .. } => {
+            let series = series.expect("embeprom: HistogramVec Sum step requires Some(series)");
+            line.write_char('{')?;
+            h.write_labels(series, line)?;
+            line.write_char('}')?;
+            snapshot.vec_sum(*h, series)
+        }
+        _ => unreachable!("embeprom: Sum step on non-histogram metric"),
+    };
+    line.write_char(' ')?;
+    value.write_prom(line)?;
+    line.write_char('\n')
+}
+
+fn render_histogram_count<const H: usize>(
+    line: &mut dyn Write,
+    desc: &MetricDesc,
+    snapshot: &HistogramSnapshot<H>,
+    series: Option<usize>,
+) -> fmt::Result {
+    write_full_name(line, desc, "_count")?;
+    let total = match &desc.metric {
+        MetricRef::Histogram { h, .. } => {
+            debug_assert!(series.is_none());
+            snapshot.scalar_count(*h)
+        }
+        MetricRef::HistogramVec { h, .. } => {
+            let series = series.expect("embeprom: HistogramVec Count step requires Some(series)");
+            line.write_char('{')?;
+            h.write_labels(series, line)?;
+            line.write_char('}')?;
+            snapshot.vec_count(*h, series)
+        }
+        _ => unreachable!("embeprom: Count step on non-histogram metric"),
+    };
+    line.write_char(' ')?;
+    write!(line, "{total}")?;
+    line.write_char('\n')
+}
+
 /// Render `step` for `desc` into `line`. `line` is not cleared here; the
 /// caller clears it before calling.
 fn render_step<const H: usize>(
@@ -438,93 +552,10 @@ fn render_step<const H: usize>(
             }
             line.write_char('\n')
         }
-        Step::Bucket { s, b } => {
-            write_full_name(line, desc, "_bucket")?;
-            line.write_char('{')?;
-            let (bound, bucket_delta) = match &desc.metric {
-                MetricRef::Histogram { h } => {
-                    debug_assert!(s.is_none());
-                    (h.bound(b), snapshot.scalar_bucket(*h, b))
-                }
-                MetricRef::HistogramVec { h } => {
-                    let s = s.expect("embeprom: HistogramVec Bucket step requires Some(series)");
-                    h.write_labels(s, line)?;
-                    line.write_char(',')?;
-                    (h.bound(b), snapshot.vec_bucket(*h, s, b))
-                }
-                _ => unreachable!("embeprom: Bucket step on non-histogram metric"),
-            };
-            *histogram_cumulative = if b == 0 {
-                bucket_delta
-            } else {
-                histogram_cumulative.wrapping_add(bucket_delta)
-            };
-            line.write_str("le=\"")?;
-            bound.write_prom(line)?;
-            line.write_str("\"} ")?;
-            write!(line, "{histogram_cumulative}")?;
-            line.write_char('\n')
-        }
-        Step::BucketInf { s } => {
-            write_full_name(line, desc, "_bucket")?;
-            line.write_char('{')?;
-            let total = match &desc.metric {
-                MetricRef::Histogram { h, .. } => {
-                    debug_assert!(s.is_none());
-                    snapshot.scalar_count(*h)
-                }
-                MetricRef::HistogramVec { h, .. } => {
-                    let s = s.expect("embeprom: HistogramVec BucketInf step requires Some(series)");
-                    h.write_labels(s, line)?;
-                    line.write_char(',')?;
-                    snapshot.vec_count(*h, s)
-                }
-                _ => unreachable!("embeprom: BucketInf step on non-histogram metric"),
-            };
-            line.write_str("le=\"+Inf\"} ")?;
-            write!(line, "{total}")?;
-            line.write_char('\n')
-        }
-        Step::Sum { s } => {
-            write_full_name(line, desc, "_sum")?;
-            let value = match &desc.metric {
-                MetricRef::Histogram { h, .. } => {
-                    debug_assert!(s.is_none());
-                    snapshot.scalar_sum(*h)
-                }
-                MetricRef::HistogramVec { h, .. } => {
-                    let s = s.expect("embeprom: HistogramVec Sum step requires Some(series)");
-                    line.write_char('{')?;
-                    h.write_labels(s, line)?;
-                    line.write_char('}')?;
-                    snapshot.vec_sum(*h, s)
-                }
-                _ => unreachable!("embeprom: Sum step on non-histogram metric"),
-            };
-            line.write_char(' ')?;
-            value.write_prom(line)?;
-            line.write_char('\n')
-        }
-        Step::Count { s } => {
-            write_full_name(line, desc, "_count")?;
-            let total = match &desc.metric {
-                MetricRef::Histogram { h, .. } => {
-                    debug_assert!(s.is_none());
-                    snapshot.scalar_count(*h)
-                }
-                MetricRef::HistogramVec { h, .. } => {
-                    let s = s.expect("embeprom: HistogramVec Count step requires Some(series)");
-                    line.write_char('{')?;
-                    h.write_labels(s, line)?;
-                    line.write_char('}')?;
-                    snapshot.vec_count(*h, s)
-                }
-                _ => unreachable!("embeprom: Count step on non-histogram metric"),
-            };
-            line.write_char(' ')?;
-            write!(line, "{total}")?;
-            line.write_char('\n')
-        }
+        Step::Bucket { s, b } => render_bucket(line, desc, snapshot, histogram_cumulative, s, b),
+        Step::BucketInf { s } => render_infinite_bucket(line, desc, snapshot, s),
+        Step::Sum { s } => render_histogram_sum(line, desc, snapshot, s),
+        Step::Count { s } => render_histogram_count(line, desc, snapshot, s),
         Step::Advance => unreachable!("embeprom: render_step called with Step::Advance"),
     }
 }
@@ -613,6 +644,13 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
     /// particular, a line that exceeds capacity `L`, or a histogram that
     /// exceeds snapshot capacity `H`, is never silently skipped and rendering
     /// cannot continue with a partial metric family.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RenderError::LineTooLong`] or
+    /// [`RenderError::HistogramCapacityExceeded`] when a configured capacity
+    /// is insufficient, and [`RenderError::Formatting`] if a type-erased
+    /// metric cannot format its value.
     pub fn next_line(&mut self) -> Result<Option<&str>, RenderError> {
         if let Some(error) = self.failed {
             return Err(error);
@@ -702,6 +740,11 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
 
     /// Drain this renderer into `w`. A render-capacity, metric-formatting, or
     /// sink failure is terminal and leaves the renderer in its error state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the rendering failures documented by [`Self::next_line`], or
+    /// [`RenderError::Sink`] if `w` rejects a rendered line.
     pub fn render_to<W: Write>(&mut self, w: &mut W) -> Result<(), RenderError> {
         while let Some(line) = self.next_line()? {
             if w.write_str(line).is_err() {
@@ -762,6 +805,11 @@ impl<const L: usize, const H: usize> Default for Renderer<{ crate::config::MAX_G
 /// Render the global registry's metrics into `w`. This is a convenience for
 /// synchronous sinks; asynchronous sinks can await between
 /// [`Renderer::next_line`] calls.
+///
+/// # Errors
+///
+/// Returns a [`RenderError`] if rendering exceeds a configured capacity, a
+/// metric cannot format its value, or `w` rejects a rendered line.
 pub fn write_all<W: Write>(w: &mut W) -> Result<(), RenderError> {
     Renderer::new().render_to(w)
 }
@@ -773,6 +821,11 @@ pub fn write_all<W: Write>(w: &mut W) -> Result<(), RenderError> {
 /// changes afterwards. It exists only for integrations that need
 /// `Content-Length` up front; prefer a chunked/streaming response
 /// driven by [`Renderer::next_line`] wherever possible.
+///
+/// # Errors
+///
+/// Returns a [`RenderError`] if the discarded render exceeds a configured
+/// capacity or a metric cannot format its value.
 pub fn rendered_len() -> Result<usize, RenderError> {
     rendered_len_from(Renderer::new())
 }
@@ -1047,8 +1100,14 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
 
         let renderer = Renderer::<4>::from_registry(&registry);
         assert_eq!(renderer.groups.len(), 2);
-        assert!(core::ptr::addr_eq(renderer.groups[0], &GOLDEN_FIXTURE_A));
-        assert!(core::ptr::addr_eq(renderer.groups[1], &GOLDEN_FIXTURE_B));
+        assert!(core::ptr::addr_eq(
+            renderer.groups[0],
+            &raw const GOLDEN_FIXTURE_A
+        ));
+        assert!(core::ptr::addr_eq(
+            renderer.groups[1],
+            &raw const GOLDEN_FIXTURE_B
+        ));
     }
 
     #[test]

@@ -120,6 +120,6 @@ mod tests {
         let g = GaugeF64::new(0.0);
         g.set(1.5);
         g.add(0.5);
-        assert_eq!(g.get(), 2.0);
+        assert_eq!(g.get().to_bits(), 2.0_f64.to_bits());
     }
 }

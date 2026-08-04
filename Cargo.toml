@@ -51,3 +51,9 @@ max-groups-64 = []
 max-groups-128 = []
 max-groups-256 = []
 max-groups-512 = []
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+must_use_candidate = "allow"
