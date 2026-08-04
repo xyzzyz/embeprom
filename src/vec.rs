@@ -18,6 +18,7 @@ use portable_atomic::{AtomicU64, Ordering};
 use crate::config::LABEL_VALUE_LEN;
 use crate::counter::Counter;
 use crate::erased::{ErasedCounterVec, ErasedGaugeVec, ErasedHistogramVec};
+use crate::escape::valid_label_name;
 use crate::gauge::Gauge;
 #[cfg(feature = "float")]
 use crate::histogram::validate_f64_bounds;
@@ -26,6 +27,43 @@ use crate::labels::{LabelBlock, build_block};
 use crate::value::Value;
 
 type KeyMap<const N: usize, const V: usize> = Mutex<RefCell<heapless::Vec<LabelBlock<V>, N>>>;
+
+const fn str_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+const fn validate_label_names<const K: usize>(names: &'static [&'static str; K], histogram: bool) {
+    let mut i = 0;
+    while i < K {
+        assert!(valid_label_name(names[i]), "embeprom: invalid label name");
+        assert!(
+            !(histogram && str_eq(names[i], "le")),
+            "embeprom: histogram label name `le` is reserved"
+        );
+
+        let mut j = 0;
+        while j < i {
+            assert!(
+                !str_eq(names[i], names[j]),
+                "embeprom: duplicate label name"
+            );
+            j += 1;
+        }
+        i += 1;
+    }
+}
 
 /// Look up `values`'s slot in `keys`, creating it (and returning its index)
 /// if not already present. Returns `None` if the label block doesn't fit in
@@ -50,7 +88,8 @@ fn write_labels_at<const N: usize, const V: usize>(
     s: usize,
     out: &mut dyn fmt::Write,
 ) -> fmt::Result {
-    critical_section::with(|cs| out.write_str(&keys.borrow_ref(cs)[s]))
+    let block = critical_section::with(|cs| keys.borrow_ref(cs)[s].clone());
+    out.write_str(&block)
 }
 
 fn series_count_of<const N: usize, const V: usize>(keys: &KeyMap<N, V>) -> usize {
@@ -182,8 +221,11 @@ pub struct CounterVec<const N: usize, const K: usize = 1, const V: usize = LABEL
 }
 
 impl<const N: usize, const K: usize, const V: usize> CounterVec<N, K, V> {
-    /// Create an empty labeled counter collection with the given label names.
+    /// Create an empty labeled counter collection with the given distinct,
+    /// valid Prometheus label names. Invalid or duplicate names panic,
+    /// including during const evaluation.
     pub const fn new(names: &'static [&'static str; K]) -> Self {
+        validate_label_names(names, false);
         Self {
             names,
             keys: Mutex::new(RefCell::new(heapless::Vec::new())),
@@ -253,8 +295,11 @@ pub struct GaugeVec<const N: usize, const K: usize = 1, const V: usize = LABEL_V
 }
 
 impl<const N: usize, const K: usize, const V: usize> GaugeVec<N, K, V> {
-    /// Create an empty labeled gauge collection with the given label names.
+    /// Create an empty labeled gauge collection with the given distinct,
+    /// valid Prometheus label names. Invalid or duplicate names panic,
+    /// including during const evaluation.
     pub const fn new(names: &'static [&'static str; K]) -> Self {
+        validate_label_names(names, false);
         Self {
             names,
             keys: Mutex::new(RefCell::new(heapless::Vec::new())),
@@ -388,10 +433,13 @@ pub struct IntHistogramVec<
 }
 
 impl<const N: usize, const B: usize, const K: usize, const V: usize> IntHistogramVec<N, B, K, V> {
-    /// Create an empty labeled histogram collection with the given label
-    /// names and strictly increasing bucket upper bounds. `bounds.len()` must
-    /// equal `B`; invalid bounds panic, including during const evaluation.
+    /// Create an empty labeled histogram collection with distinct, valid
+    /// Prometheus label names and strictly increasing bucket upper bounds.
+    /// The name `le` is reserved for generated bucket labels. Invalid names,
+    /// duplicate names, reserved names, and invalid bounds panic, including
+    /// during const evaluation.
     pub const fn new(names: &'static [&'static str; K], bounds: &'static [u64]) -> Self {
+        validate_label_names(names, true);
         validate_u64_bounds::<B>(bounds);
         Self {
             names,
@@ -528,7 +576,7 @@ impl<'a> HistSeries<'a> {
 
     #[inline]
     fn observe_inner(metric: HistMetric<'_>, v: f64) {
-        let mut i = 0;
+        let mut i = if v.is_nan() { metric.buckets.len() } else { 0 };
         while i < metric.buckets.len() && v > metric.bounds[i] {
             i += 1;
         }
@@ -560,11 +608,13 @@ pub struct HistogramVec<
 
 #[cfg(feature = "float")]
 impl<const N: usize, const B: usize, const K: usize, const V: usize> HistogramVec<N, B, K, V> {
-    /// Create an empty labeled histogram collection with the given label
-    /// names and strictly increasing, finite bucket upper bounds.
-    /// `bounds.len()` must equal `B`; invalid bounds panic, including during
-    /// const evaluation.
+    /// Create an empty labeled histogram collection with distinct, valid
+    /// Prometheus label names and strictly increasing, finite bucket upper
+    /// bounds. The name `le` is reserved for generated bucket labels. Invalid
+    /// names, duplicate names, reserved names, and invalid bounds panic,
+    /// including during const evaluation.
     pub const fn new(names: &'static [&'static str; K], bounds: &'static [f64]) -> Self {
+        validate_label_names(names, true);
         validate_f64_bounds::<B>(bounds);
         Self {
             names,
@@ -669,6 +719,18 @@ mod tests {
         assert_eq!(cv.with(&["timeout"]).get(), 3);
         assert_eq!(cv.with(&["auth_fail"]).get(), 1);
         assert_eq!(labels_of(&cv, 0), "reason=\"timeout\"");
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid label name")]
+    fn counter_vec_rejects_invalid_label_names_at_runtime() {
+        let _ = CounterVec::<1, 1>::new(&["not-valid"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate label name")]
+    fn counter_vec_rejects_duplicate_label_names_at_runtime() {
+        let _ = CounterVec::<1, 2>::new(&["kind", "kind"]);
     }
 
     #[test]
@@ -783,6 +845,12 @@ mod tests {
         let _ = IntHistogramVec::<1, 2>::new(&PEER, &[1000, 100]);
     }
 
+    #[test]
+    #[should_panic(expected = "histogram label name `le` is reserved")]
+    fn int_histogram_vec_rejects_the_generated_bucket_label_name() {
+        let _ = IntHistogramVec::<1, 1>::new(&["le"], &[100]);
+    }
+
     #[cfg(feature = "float")]
     #[test]
     fn histogram_vec_tracks_independent_series() {
@@ -792,6 +860,18 @@ mod tests {
         assert_eq!(hv.bucket(0, 0), 1);
         assert_eq!(hv.bucket(0, 1), 1);
         assert_eq!(hv.sum(0), Value::F64(2.25));
+    }
+
+    #[cfg(feature = "float")]
+    #[test]
+    fn histogram_vec_routes_nan_only_to_the_implicit_infinite_bucket() {
+        let hv: HistogramVec<1, 2> = HistogramVec::new(&PEER, &[0.5, 5.0]);
+        hv.observe(&["ap-1"], f64::NAN);
+
+        assert_eq!(hv.bucket(0, 0), 0);
+        assert_eq!(hv.bucket(0, 1), 0);
+        assert_eq!(hv.total_count(0), 1);
+        assert!(matches!(hv.sum(0), Value::F64(sum) if sum.is_nan()));
     }
 
     #[cfg(feature = "float")]

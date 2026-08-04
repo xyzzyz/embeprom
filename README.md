@@ -144,10 +144,11 @@ A group can be registered explicitly (`register()`, panics/errors on a full
 registry — a startup-time signal) or lazily (`OnceRegister::ensure`, called
 from the macro-generated accessor on first use — logs at most once and never
 panics, since by then it's not startup anymore). Both ultimately call
-`Registry::try_register`, which dedups by its static data address
-(`core::ptr::addr_eq`) specifically so a group can go through *either or both*
-paths without being double-counted. If you add a third way to register a
-group, route it through `try_register` too, or this invariant breaks.
+`Registry::try_register`, which dedups non-zero-sized groups by static data
+address and zero-sized groups by concrete type, specifically so a group can
+go through *either or both* paths without being double-counted. If you add a
+third way to register a group, route it through `try_register` too, or this
+invariant breaks.
 
 The built-in registry is only the default target. A final application can
 call `install_registry(&REGISTRY)` before any metrics are touched to route

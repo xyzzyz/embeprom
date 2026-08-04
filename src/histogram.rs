@@ -50,11 +50,13 @@ pub(crate) const fn validate_f64_bounds<const B: usize>(bounds: &[f64]) {
 /// and rendering are linear scans with `observe` performing exactly 3 atomic
 /// ops regardless of `B`.
 ///
-/// The `_bucket`, `_sum`, and `_count` values are three independent atomics,
-/// so a concurrent render can observe `count` one ahead of the bucket sum.
-/// Prometheus tolerates this; enable the `consistent-histograms` feature to
-/// serialize observations and let the renderer take one coherent snapshot
-/// for every histogram family if it matters.
+/// The `_bucket`, `_sum`, and `_count` values are independent atomics. A
+/// concurrent line-by-line render can therefore combine values from different
+/// instants: `_count` may lead the rendered finite buckets, or a finite bucket
+/// may briefly exceed the subsequently read `_count`. Enable the
+/// `consistent-histograms` feature to serialize observations and let the
+/// renderer take one coherent snapshot for every histogram family when that
+/// matters.
 pub struct IntHistogram<const B: usize> {
     bounds: &'static [u64],
     buckets: [AtomicU64; B],
@@ -202,7 +204,10 @@ impl<const B: usize> Histogram<B> {
 
     #[inline]
     fn observe_inner(&self, v: f64) {
-        let mut i = 0;
+        // NaN is not <= any finite bound. Match Prometheus client behavior by
+        // counting it only in the implicit +Inf bucket (while the sum becomes
+        // NaN), rather than accidentally assigning it to the first bucket.
+        let mut i = if v.is_nan() { B } else { 0 };
         while i < B && v > self.bounds[i] {
             i += 1;
         }
@@ -307,6 +312,18 @@ mod tests {
         assert_eq!(h.bucket(1), 1);
         assert_eq!(h.count(), 3);
         assert_eq!(h.sum(), 3.0);
+    }
+
+    #[cfg(feature = "float")]
+    #[test]
+    fn float_histogram_routes_nan_only_to_the_implicit_infinite_bucket() {
+        let h: Histogram<2> = Histogram::new(&[0.5, 1.0]);
+        h.observe(f64::NAN);
+
+        assert_eq!(h.bucket(0), 0);
+        assert_eq!(h.bucket(1), 0);
+        assert_eq!(h.count(), 1);
+        assert!(h.sum().is_nan());
     }
 
     #[cfg(feature = "float")]

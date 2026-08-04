@@ -441,7 +441,7 @@ fn render_step<const H: usize>(
         Step::Bucket { s, b } => {
             write_full_name(line, desc, "_bucket")?;
             line.write_char('{')?;
-            let (bound, bucket_count) = match &desc.metric {
+            let (bound, bucket_delta) = match &desc.metric {
                 MetricRef::Histogram { h } => {
                     debug_assert!(s.is_none());
                     (h.bound(b), snapshot.scalar_bucket(*h, b))
@@ -455,9 +455,9 @@ fn render_step<const H: usize>(
                 _ => unreachable!("embeprom: Bucket step on non-histogram metric"),
             };
             *histogram_cumulative = if b == 0 {
-                bucket_count
+                bucket_delta
             } else {
-                histogram_cumulative.wrapping_add(bucket_count)
+                histogram_cumulative.wrapping_add(bucket_delta)
             };
             line.write_str("le=\"")?;
             bound.write_prom(line)?;
@@ -649,9 +649,8 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
                     MetricRef::HistogramVec { h } => Some(h.bucket_count()),
                     _ => None,
                 };
-                if let Some(required) = bucket_count
-                    && matches!(cur_step, Step::Help)
-                    && required > H
+                if let Some(required) =
+                    bucket_count.filter(|required| matches!(cur_step, Step::Help) && *required > H)
                 {
                     let error = RenderError::HistogramCapacityExceeded {
                         required,
@@ -775,6 +774,12 @@ pub fn write_all<W: Write>(w: &mut W) -> Result<(), RenderError> {
 /// `Content-Length` up front; prefer a chunked/streaming response
 /// driven by [`Renderer::next_line`] wherever possible.
 pub fn rendered_len() -> Result<usize, RenderError> {
+    rendered_len_from(Renderer::new())
+}
+
+fn rendered_len_from<const N: usize, const L: usize, const H: usize>(
+    mut renderer: Renderer<N, L, H>,
+) -> Result<usize, RenderError> {
     struct ByteCount(usize);
     impl Write for ByteCount {
         fn write_str(&mut self, s: &str) -> fmt::Result {
@@ -783,7 +788,7 @@ pub fn rendered_len() -> Result<usize, RenderError> {
         }
     }
     let mut counter = ByteCount(0);
-    write_all(&mut counter)?;
+    renderer.render_to(&mut counter)?;
     Ok(counter.0)
 }
 
@@ -799,6 +804,19 @@ mod tests {
     use crate::value::Value;
     #[cfg(feature = "consistent-histograms")]
     use crate::vec::IntHistogramVec;
+
+    static RENDERED_LEN_REGISTRY: Registry<1> = Registry::new();
+
+    crate::metrics! {
+        registry = RENDERED_LEN_REGISTRY;
+
+        struct RenderedLenMetrics;
+        namespace = "rendered_len_test";
+        static RENDERED_LEN_METRICS;
+        fn rendered_len_metrics;
+
+        counter requests = "Total test requests.";
+    }
 
     struct FixtureCounterVec {
         labels: [&'static str; 2],
@@ -1458,11 +1476,15 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
     }
 
     #[test]
-    fn rendered_len_matches_write_all_global_registry() {
-        // Uses the global registry (whatever else is registered by other
-        // tests in this process); just check internal consistency.
-        let mut out = heapless::String::<8192>::new();
-        write_all(&mut out).unwrap();
-        assert_eq!(rendered_len().unwrap(), out.len());
+    fn rendered_len_matches_render_for_an_isolated_registry() {
+        rendered_len_metrics().requests.inc_by(9_999);
+
+        let mut out = heapless::String::<256>::new();
+        Renderer::<1>::from_registry(&RENDERED_LEN_REGISTRY)
+            .render_to(&mut out)
+            .unwrap();
+        let len = rendered_len_from(Renderer::<1>::from_registry(&RENDERED_LEN_REGISTRY)).unwrap();
+
+        assert_eq!(len, out.len());
     }
 }

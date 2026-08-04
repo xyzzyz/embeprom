@@ -8,6 +8,7 @@ readme = "README.md"
 categories = ["embedded", "no-std"]
 keywords = ["prometheus", "metrics", "embedded", "no-std"]
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/xyzzyz/embeprom"
 exclude = ["examples/"]
 
 [dependencies]

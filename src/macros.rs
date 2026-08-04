@@ -42,6 +42,18 @@
 /// metrics().disconnects_total.inc(&["beacon_timeout"]);
 /// ```
 ///
+/// The help string is also used as the generated field's Rust documentation,
+/// so it appears alongside the concrete metric type and its methods in
+/// `cargo doc`. A group must declare at least one metric:
+///
+/// ```compile_fail
+/// embeprom::metrics! {
+///     struct EmptyMetrics;
+///     static METRICS;
+///     fn metrics;
+/// }
+/// ```
+///
 /// Supported `kind`s: `counter`, `gauge`, `gauge_f64` (feature `float`),
 /// `counter_vec<N>`, `gauge_vec<N>`, `int_histogram[buckets: ...]`,
 /// `histogram[buckets: ...]` (feature `float`), `int_histogram_vec<N>`, and
@@ -71,7 +83,55 @@ macro_rules! metrics {
 
 #[doc(hidden)]
 #[macro_export]
+macro_rules! __embeprom_require_kind_feature {
+    (counter) => {};
+    (gauge) => {};
+    (counter_vec) => {};
+    (gauge_vec) => {};
+    (int_histogram) => {};
+    (int_histogram_vec) => {};
+    (gauge_f64) => {
+        $crate::__embeprom_require_float!();
+    };
+    (histogram) => {
+        $crate::__embeprom_require_float!();
+    };
+    (histogram_vec) => {
+        $crate::__embeprom_require_float!();
+    };
+}
+
+#[cfg(feature = "float")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __embeprom_require_float {
+    () => {};
+}
+
+#[cfg(not(feature = "float"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __embeprom_require_float {
+    () => {
+        compile_error!(
+            "embeprom: floating-point metric kinds require enabling the `float` feature"
+        );
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
 macro_rules! __embeprom_metrics_generate {
+    (
+        [$($registration:tt)*]
+        $(#[$smeta:meta])*
+        $svis:vis struct $Group:ident;
+        $(namespace = $ns:literal;)?
+        static $STATIC:ident;
+        fn $accessor:ident;
+    ) => {
+        compile_error!("embeprom: a metrics! group must declare at least one metric");
+    };
     (
         [$($registration:tt)*]
         $(#[$smeta:meta])*
@@ -83,15 +143,20 @@ macro_rules! __embeprom_metrics_generate {
             $(#[$fmeta:meta])*
             $kind:ident $(< $cap:literal $(, label_bytes: $label_bytes:literal)? >)? $field:ident
                 $([ $($extra:tt)* ])? = $help:literal ;
-        )*
+        )+
     ) => {
+        $(
+            $crate::__embeprom_require_kind_feature!($kind);
+        )*
+
         $(#[$smeta])*
         $svis struct $Group {
             $(
                 $(#[$fmeta])*
+                #[doc = $help]
                 pub $field: $crate::__embeprom_ty!(
                     @ty $kind $(, $cap $(, $label_bytes)?)? ; $($($extra)*)?),
-            )*
+            )+
         }
 
         impl $Group {
@@ -101,7 +166,7 @@ macro_rules! __embeprom_metrics_generate {
                     $(
                         $field: $crate::__embeprom_init!(
                             @init $kind $(, $cap $(, $label_bytes)?)? ; $($($extra)*)?),
-                    )*
+                    )+
                 }
             }
         }
@@ -119,7 +184,7 @@ macro_rules! __embeprom_metrics_generate {
                     "embeprom: invalid metric name"
                 );
                 $crate::__embeprom_validate_labels!(@validate $kind $(, $cap)? ; $($($extra)*)?);
-            )*
+            )+
             $(
                 assert!($crate::valid_metric_name($ns), "embeprom: invalid namespace");
             )?
@@ -136,6 +201,8 @@ macro_rules! __embeprom_metrics_generate {
 
             fn get(&self, index: usize) -> ::core::option::Option<$crate::MetricDesc<'_>> {
                 const NAMESPACE: &str = $crate::__embeprom_ns!($($ns)?);
+                let _ = NAMESPACE;
+                #[allow(unused_mut)]
                 let mut i = index;
                 $(
                     if i == 0 {
@@ -148,14 +215,16 @@ macro_rules! __embeprom_metrics_generate {
                         });
                     }
                     i -= 1;
-                )*
+                )+
                 let _ = i;
                 ::core::option::Option::None
             }
         }
 
+        #[doc = concat!("The static `", stringify!($Group), "` metrics instance.")]
         $svis static $STATIC: $Group = $Group::new();
 
+        #[doc = concat!("Return the static `", stringify!($Group), "` metrics instance.")]
         $svis fn $accessor() -> &'static $Group {
             $crate::__embeprom_register_mode!([$($registration)*] &$STATIC);
             &$STATIC
@@ -383,6 +452,15 @@ mod tests {
             = "Per-peer latency.";
     }
 
+    crate::metrics! {
+        struct AccessorMetrics;
+        namespace = "accessor_test";
+        static ACCESSOR_METRICS;
+        fn accessor_metrics;
+
+        counter calls = "Accessor calls.";
+    }
+
     #[test]
     fn generates_a_real_struct_with_named_fields() {
         let m = WifiMetrics::new();
@@ -400,9 +478,10 @@ mod tests {
 
     #[test]
     fn accessor_and_static_are_generated() {
-        metrics().packets_sent.inc_by(3);
-        assert_eq!(metrics().packets_sent.get(), 3);
-        assert_eq!(metrics().group_name(), "wifi");
+        accessor_metrics().calls.inc_by(3);
+        assert_eq!(accessor_metrics().calls.get(), 3);
+        assert_eq!(accessor_metrics().group_name(), "accessor_test");
+        assert!(core::ptr::eq(accessor_metrics(), &ACCESSOR_METRICS));
     }
 
     #[test]
@@ -441,7 +520,7 @@ mod tests {
             1
         );
 
-        // Further calls (and an explicit `register`, which dedups by pointer
+        // Further calls (and an explicit `register`, which dedups by static
         // identity) don't add a second entry.
         registration_metrics().requests.inc();
         crate::register(&REGISTRATION_METRICS);
