@@ -12,7 +12,9 @@ pub struct Counter {
 impl Counter {
     /// Create a new counter starting at zero.
     pub const fn new() -> Self {
-        Self { v: AtomicU64::new(0) }
+        Self {
+            v: AtomicU64::new(0),
+        }
     }
 
     /// Increment by 1.

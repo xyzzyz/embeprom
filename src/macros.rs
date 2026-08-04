@@ -347,14 +347,20 @@ macro_rules! __embeprom_count {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __embeprom_unit {
-    ($x:tt) => { () };
+    ($x:tt) => {
+        ()
+    };
 }
 
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __embeprom_ns {
-    () => { "" };
-    ($ns:literal) => { $ns };
+    () => {
+        ""
+    };
+    ($ns:literal) => {
+        $ns
+    };
 }
 
 #[cfg(test)]
@@ -535,7 +541,9 @@ mod tests {
     fn accessor_can_lazily_register_with_a_named_registry() {
         named_registry_metrics().requests.inc();
         named_registry_metrics().requests.inc();
-        named_registry_metrics().requests_by_reason.inc(&["auth_fail"]);
+        named_registry_metrics()
+            .requests_by_reason
+            .inc(&["auth_fail"]);
 
         assert_eq!(NAMED_REGISTRY.len(), 1);
         assert_eq!(named_registry_metrics().requests.get(), 2);

@@ -155,7 +155,10 @@ mod tests {
 
     #[test]
     fn dynamic_dispatch_over_metric_group() {
-        let g = FixtureGroup { requests: Counter::new(), temperature: Gauge::new(21) };
+        let g = FixtureGroup {
+            requests: Counter::new(),
+            temperature: Gauge::new(21),
+        };
         g.requests.inc_by(3);
 
         let group: &dyn MetricGroup = &g;

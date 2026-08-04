@@ -183,21 +183,22 @@ mod render;
 mod value;
 mod vec;
 
-pub use counter::Counter;
 pub use config::{LABEL_VALUE_LEN, MAX_GROUPS, MAX_HISTOGRAM_BUCKETS, MAX_LINE};
-pub use erased::{ErasedCounterVec, ErasedGaugeVec, ErasedHistogram, ErasedHistogramVec, MetricDesc, MetricGroup, MetricRef};
+pub use counter::Counter;
+pub use erased::{
+    ErasedCounterVec, ErasedGaugeVec, ErasedHistogram, ErasedHistogramVec, MetricDesc, MetricGroup,
+    MetricRef,
+};
 pub use escape::{valid_label_name, valid_metric_name};
 pub use gauge::Gauge;
 pub use histogram::IntHistogram;
 pub use registry::{
-    group_count, install_registry, register, snapshot, try_register, GroupSnapshot,
-    InstallRegistryError, OnceRegister, Registry, RegistryFull,
+    GroupSnapshot, InstallRegistryError, OnceRegister, Registry, RegistryFull, group_count,
+    install_registry, register, snapshot, try_register,
 };
-pub use render::{rendered_len, write_all, RenderError, Renderer, CONTENT_TYPE};
+pub use render::{CONTENT_TYPE, RenderError, Renderer, rendered_len, write_all};
 pub use value::Value;
-pub use vec::{
-    CounterSeries, CounterVec, GaugeSeries, GaugeVec, IntHistSeries, IntHistogramVec,
-};
+pub use vec::{CounterSeries, CounterVec, GaugeSeries, GaugeVec, IntHistSeries, IntHistogramVec};
 
 #[cfg(feature = "float")]
 pub use gauge::GaugeF64;

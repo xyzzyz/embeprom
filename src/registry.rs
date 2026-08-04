@@ -41,14 +41,17 @@ pub struct Registry<const N: usize = { crate::config::MAX_GROUPS }> {
 impl<const N: usize> Registry<N> {
     /// Create an empty registry.
     pub const fn new() -> Self {
-        Self { groups: Mutex::new(RefCell::new(Vec::new())) }
+        Self {
+            groups: Mutex::new(RefCell::new(Vec::new())),
+        }
     }
 
     /// Register a metric group. Panics if the registry is already at
     /// capacity `N` — registration happens at startup, so failing loudly is
     /// preferable to silently dropping a whole crate's metrics.
     pub fn register(&self, group: &'static dyn MetricGroup) {
-        self.try_register(group).expect("embeprom: registry is full, increase capacity N");
+        self.try_register(group)
+            .expect("embeprom: registry is full, increase capacity N");
     }
 
     /// Register a metric group, returning [`RegistryFull`] instead of
@@ -140,10 +143,7 @@ impl RegistrationRouter {
         }
     }
 
-    fn install(
-        &self,
-        target: &'static dyn RegistrationTarget,
-    ) -> Result<(), InstallRegistryError> {
+    fn install(&self, target: &'static dyn RegistrationTarget) -> Result<(), InstallRegistryError> {
         critical_section::with(|cs| {
             let mut state = self.state.borrow_ref_mut(cs);
             if state.in_use || state.installed.is_some() {
@@ -154,10 +154,7 @@ impl RegistrationRouter {
         })
     }
 
-    fn target(
-        &self,
-        fallback: &'static dyn RegistrationTarget,
-    ) -> &'static dyn RegistrationTarget {
+    fn target(&self, fallback: &'static dyn RegistrationTarget) -> &'static dyn RegistrationTarget {
         critical_section::with(|cs| {
             let mut state = self.state.borrow_ref_mut(cs);
             state.in_use = true;
@@ -257,7 +254,9 @@ pub struct OnceRegister {
 impl OnceRegister {
     /// Create a new, not-yet-registered guard.
     pub const fn new() -> Self {
-        Self { done: AtomicBool::new(false) }
+        Self {
+            done: AtomicBool::new(false),
+        }
     }
 
     /// Register `group` with the global registry if this is the first call;

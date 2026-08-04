@@ -11,7 +11,9 @@ pub struct Gauge {
 impl Gauge {
     /// Create a new gauge with the given initial value.
     pub const fn new(initial: i64) -> Self {
-        Self { v: AtomicI64::new(initial) }
+        Self {
+            v: AtomicI64::new(initial),
+        }
     }
 
     /// Set the value.
@@ -66,7 +68,9 @@ pub struct GaugeF64 {
 impl GaugeF64 {
     /// Create a new gauge with the given initial value.
     pub const fn new(initial: f64) -> Self {
-        Self { v: portable_atomic::AtomicF64::new(initial) }
+        Self {
+            v: portable_atomic::AtomicF64::new(initial),
+        }
     }
 
     /// Set the value.

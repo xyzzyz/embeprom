@@ -22,7 +22,7 @@ use crate::gauge::Gauge;
 #[cfg(feature = "float")]
 use crate::histogram::validate_f64_bounds;
 use crate::histogram::validate_u64_bounds;
-use crate::labels::{build_block, LabelBlock};
+use crate::labels::{LabelBlock, build_block};
 use crate::value::Value;
 
 type KeyMap<const N: usize, const V: usize> = Mutex<RefCell<heapless::Vec<LabelBlock<V>, N>>>;
@@ -68,7 +68,9 @@ pub struct CounterSeries<'a> {
 
 impl CounterSeries<'_> {
     fn metric(counter: &Counter) -> CounterSeries<'_> {
-        CounterSeries { counter: Some(counter) }
+        CounterSeries {
+            counter: Some(counter),
+        }
     }
 
     const fn sink() -> Self {
@@ -326,7 +328,14 @@ impl<'a> IntHistSeries<'a> {
         sum: &'a AtomicU64,
         count: &'a AtomicU64,
     ) -> Self {
-        Self { metric: Some(IntHistMetric { bounds, buckets, sum, count }) }
+        Self {
+            metric: Some(IntHistMetric {
+                bounds,
+                buckets,
+                sum,
+                count,
+            }),
+        }
     }
 
     const fn sink() -> Self {
@@ -364,8 +373,12 @@ impl<'a> IntHistSeries<'a> {
 /// A labeled histogram collection over `u64` observations, with at most `N`
 /// distinct label-value combinations, `B` finite buckets shared by all
 /// series, `K` label names, and a rendered label-block byte budget `V`.
-pub struct IntHistogramVec<const N: usize, const B: usize, const K: usize = 1, const V: usize = LABEL_VALUE_LEN>
-{
+pub struct IntHistogramVec<
+    const N: usize,
+    const B: usize,
+    const K: usize = 1,
+    const V: usize = LABEL_VALUE_LEN,
+> {
     names: &'static [&'static str; K],
     bounds: &'static [u64],
     keys: KeyMap<N, V>,
@@ -485,7 +498,14 @@ impl<'a> HistSeries<'a> {
         sum: &'a portable_atomic::AtomicF64,
         count: &'a AtomicU64,
     ) -> Self {
-        Self { metric: Some(HistMetric { bounds, buckets, sum, count }) }
+        Self {
+            metric: Some(HistMetric {
+                bounds,
+                buckets,
+                sum,
+                count,
+            }),
+        }
     }
 
     const fn sink() -> Self {
@@ -524,8 +544,12 @@ impl<'a> HistSeries<'a> {
 /// [`IntHistogramVec`] for the storage/capacity model; prefer that type when
 /// values are naturally integral.
 #[cfg(feature = "float")]
-pub struct HistogramVec<const N: usize, const B: usize, const K: usize = 1, const V: usize = LABEL_VALUE_LEN>
-{
+pub struct HistogramVec<
+    const N: usize,
+    const B: usize,
+    const K: usize = 1,
+    const V: usize = LABEL_VALUE_LEN,
+> {
     names: &'static [&'static str; K],
     bounds: &'static [f64],
     keys: KeyMap<N, V>,

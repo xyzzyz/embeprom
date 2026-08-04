@@ -7,9 +7,7 @@
 
 use core::fmt::{self, Write};
 
-use crate::erased::{
-    ErasedHistogram, ErasedHistogramVec, MetricDesc, MetricRef,
-};
+use crate::erased::{ErasedHistogram, ErasedHistogramVec, MetricDesc, MetricRef};
 use crate::escape::write_escaped_help;
 use crate::registry::{GroupSnapshot, Registry};
 
@@ -51,7 +49,12 @@ pub enum RenderError {
 impl fmt::Display for RenderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::LineTooLong { required, capacity, namespace, metric } => {
+            Self::LineTooLong {
+                required,
+                capacity,
+                namespace,
+                metric,
+            } => {
                 if namespace.is_empty() {
                     write!(
                         f,
@@ -101,7 +104,11 @@ struct LineBuffer<const N: usize> {
 
 impl<const N: usize> LineBuffer<N> {
     const fn new() -> Self {
-        Self { text: heapless::String::new(), required: 0, overflowed: false }
+        Self {
+            text: heapless::String::new(),
+            required: 0,
+            overflowed: false,
+        }
     }
 
     fn clear(&mut self) {
@@ -188,12 +195,7 @@ impl<const N: usize> HistogramSnapshot<N> {
         }
     }
 
-    fn vec_bucket(
-        &self,
-        histogram: &dyn ErasedHistogramVec,
-        series: usize,
-        bucket: usize,
-    ) -> u64 {
+    fn vec_bucket(&self, histogram: &dyn ErasedHistogramVec, series: usize, bucket: usize) -> u64 {
         #[cfg(feature = "consistent-histograms")]
         {
             let _ = (histogram, series);
@@ -269,21 +271,38 @@ enum Step {
     Series(usize),
     /// One finite bucket of a histogram (`s` is `None` for a plain
     /// [`Histogram`](crate::histogram::Histogram), `Some(series)` for a vec).
-    Bucket { s: Option<usize>, b: usize },
-    BucketInf { s: Option<usize> },
-    Sum { s: Option<usize> },
-    Count { s: Option<usize> },
+    Bucket {
+        s: Option<usize>,
+        b: usize,
+    },
+    BucketInf {
+        s: Option<usize>,
+    },
+    Sum {
+        s: Option<usize>,
+    },
+    Count {
+        s: Option<usize>,
+    },
     /// Marks that the current metric is fully rendered; advance to the next
     /// metric (or group) on the next call. Never itself rendered.
     Advance,
 }
 
 fn first_series_step(series_count: usize) -> Step {
-    if series_count == 0 { Step::Advance } else { Step::Series(0) }
+    if series_count == 0 {
+        Step::Advance
+    } else {
+        Step::Series(0)
+    }
 }
 
 fn first_hist_step(s: Option<usize>, bucket_count: usize) -> Step {
-    if bucket_count == 0 { Step::BucketInf { s } } else { Step::Bucket { s, b: 0 } }
+    if bucket_count == 0 {
+        Step::BucketInf { s }
+    } else {
+        Step::Bucket { s, b: 0 }
+    }
 }
 
 fn type_word(m: &MetricRef) -> &'static str {
@@ -329,7 +348,11 @@ fn next_step(step: Step, desc: &MetricDesc) -> Step {
                 MetricRef::GaugeVec(gv) => gv.series_count(),
                 _ => 0,
             };
-            if i + 1 < n { Step::Series(i + 1) } else { Step::Advance }
+            if i + 1 < n {
+                Step::Series(i + 1)
+            } else {
+                Step::Advance
+            }
         }
         Step::Bucket { s, b } => {
             let bucket_count = match &desc.metric {
@@ -337,7 +360,11 @@ fn next_step(step: Step, desc: &MetricDesc) -> Step {
                 MetricRef::HistogramVec { h, .. } => h.bucket_count(),
                 _ => 0,
             };
-            if b + 1 < bucket_count { Step::Bucket { s, b: b + 1 } } else { Step::BucketInf { s } }
+            if b + 1 < bucket_count {
+                Step::Bucket { s, b: b + 1 }
+            } else {
+                Step::BucketInf { s }
+            }
         }
         Step::BucketInf { s } => Step::Sum { s },
         Step::Sum { s } => Step::Count { s },
@@ -348,7 +375,11 @@ fn next_step(step: Step, desc: &MetricDesc) -> Step {
                     MetricRef::HistogramVec { h, .. } => (h.series_count(), h.bucket_count()),
                     _ => (0, 0),
                 };
-                if idx + 1 < n { first_hist_step(Some(idx + 1), bucket_count) } else { Step::Advance }
+                if idx + 1 < n {
+                    first_hist_step(Some(idx + 1), bucket_count)
+                } else {
+                    Step::Advance
+                }
             }
         },
         Step::Advance => unreachable!("embeprom: next_step called with Step::Advance"),
@@ -553,7 +584,10 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
     /// ```
     pub fn from_registry<const M: usize>(registry: &Registry<M>) -> Self {
         const {
-            assert!(M <= N, "embeprom: registry capacity exceeds renderer capacity");
+            assert!(
+                M <= N,
+                "embeprom: registry capacity exceeds renderer capacity"
+            );
         }
 
         let source = registry.snapshot();
@@ -680,9 +714,7 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
     }
 }
 
-impl<const L: usize, const H: usize>
-    Renderer<{ crate::config::MAX_GROUPS }, L, H>
-{
+impl<const L: usize, const H: usize> Renderer<{ crate::config::MAX_GROUPS }, L, H> {
     /// Build a renderer with line capacity `L` over a snapshot of the global
     /// registry.
     pub fn from_global() -> Self {
@@ -704,13 +736,8 @@ impl Renderer {
     /// let _: embeprom::Renderer<{ embeprom::MAX_GROUPS }, 512> =
     ///     embeprom::Renderer::with_line_capacity::<512>();
     /// ```
-    pub fn with_line_capacity<const L: usize>() ->
-        Renderer<
-            { crate::config::MAX_GROUPS },
-            L,
-            { crate::config::MAX_HISTOGRAM_BUCKETS },
-        >
-    {
+    pub fn with_line_capacity<const L: usize>()
+    -> Renderer<{ crate::config::MAX_GROUPS }, L, { crate::config::MAX_HISTOGRAM_BUCKETS }> {
         Renderer::from_global()
     }
 
@@ -721,16 +748,13 @@ impl Renderer {
     /// let _: embeprom::Renderer<{ embeprom::MAX_GROUPS }, 512, 32> =
     ///     embeprom::Renderer::with_capacities::<512, 32>();
     /// ```
-    pub fn with_capacities<const L: usize, const H: usize>() ->
-        Renderer<{ crate::config::MAX_GROUPS }, L, H>
-    {
+    pub fn with_capacities<const L: usize, const H: usize>()
+    -> Renderer<{ crate::config::MAX_GROUPS }, L, H> {
         Renderer::from_global()
     }
 }
 
-impl<const L: usize, const H: usize> Default
-    for Renderer<{ crate::config::MAX_GROUPS }, L, H>
-{
+impl<const L: usize, const H: usize> Default for Renderer<{ crate::config::MAX_GROUPS }, L, H> {
     fn default() -> Self {
         Self::from_global()
     }
@@ -877,7 +901,9 @@ mod tests {
                     namespace: "wifi",
                     name: "peer_latency_us",
                     help: "Per-peer latency.",
-                    metric: MetricRef::HistogramVec { h: &self.peer_latency },
+                    metric: MetricRef::HistogramVec {
+                        h: &self.peer_latency,
+                    },
                 },
                 _ => return None,
             })
@@ -1030,8 +1056,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
         const FIRST_LINE: &str = "# HELP wifi_packets_sent Total Wi-Fi frames transmitted.\n";
         let registry = Registry::<1>::new();
         registry.register(&GOLDEN_FIXTURE_A);
-        let mut renderer =
-            Renderer::<1, { FIRST_LINE.len() }>::from_registry(&registry);
+        let mut renderer = Renderer::<1, { FIRST_LINE.len() }>::from_registry(&registry);
         assert_eq!(renderer.next_line(), Ok(Some(FIRST_LINE)));
     }
 
@@ -1066,7 +1091,8 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
         }
 
         fn bucket(&self, b: usize) -> u64 {
-            self.bucket_reads.fetch_add(1, portable_atomic::Ordering::Relaxed);
+            self.bucket_reads
+                .fetch_add(1, portable_atomic::Ordering::Relaxed);
             b as u64 + 1
         }
 
@@ -1412,7 +1438,9 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
             })
         }
     }
-    static ZERO_SERIES_GROUP: ZeroSeriesVecGroup = ZeroSeriesVecGroup { v: FixtureCounterVecEmpty };
+    static ZERO_SERIES_GROUP: ZeroSeriesVecGroup = ZeroSeriesVecGroup {
+        v: FixtureCounterVecEmpty,
+    };
 
     #[test]
     fn zero_series_vec_still_emits_help_and_type() {
