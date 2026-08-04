@@ -504,8 +504,10 @@ mod tests {
 
     #[test]
     fn histogram_bounds_render_values_instead_of_rust_literal_spelling() {
+        let registry = crate::Registry::<1>::new();
+        registry.register(literal_bucket_metrics());
         let mut out = heapless::String::<512>::new();
-        crate::Renderer::<1>::from_groups(&[literal_bucket_metrics()])
+        crate::Renderer::<1>::from_registry(&registry)
             .render_to(&mut out)
             .unwrap();
 
