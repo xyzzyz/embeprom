@@ -51,3 +51,14 @@ jobs:
         run: cargo +stable clippy --locked --all-targets --all-features -- -D warnings
       - name: Lint without default features
         run: cargo +stable clippy --locked --all-targets --no-default-features -- -D warnings
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Verify crates.io package
+        run: cargo +stable publish --locked --dry-run
