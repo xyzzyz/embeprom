@@ -51,15 +51,25 @@
 /// metrics::get().disconnects_total.inc(&["beacon_timeout"]);
 /// ```
 ///
-/// The first line of each field's Rust documentation is also used as its
-/// Prometheus help string. Further `///` lines remain part of the Rust
-/// documentation. Put documentation for the group as a whole on its enclosing
-/// module. Because the generated item names are fixed, invoke this macro at
-/// most once per module. A group must declare at least one metric:
+/// Every metric field requires a `///` documentation comment because its first
+/// line is also used as the Prometheus help string. Further `///` lines remain
+/// part of the Rust documentation. Put documentation for the group as a whole
+/// on its enclosing module. Because the generated item names are fixed, invoke
+/// this macro at most once per module. A group must declare at least one metric:
 ///
 /// ```compile_fail
 /// mod metrics {
 ///     embeprom::metrics! {}
+/// }
+/// ```
+///
+/// Omitting a field's documentation is a declaration error:
+///
+/// ```compile_fail
+/// mod metrics {
+///     embeprom::metrics! {
+///         requests: Counter,
+///     }
 /// }
 /// ```
 ///
@@ -89,6 +99,23 @@
 /// declarations to lazily register with a named [`crate::Registry`] instead,
 /// or put `registration = manual;` there to disable accessor-driven
 /// registration.
+///
+/// ```
+/// mod metrics {
+///     pub static REGISTRY: embeprom::Registry<4> = embeprom::Registry::new();
+///
+///     embeprom::metrics! {
+///         registry = REGISTRY;
+///
+///         /// Completed requests.
+///         requests: Counter,
+///     }
+/// }
+///
+/// metrics::get().requests.inc();
+/// let mut renderer = embeprom::Renderer::<4>::from_registry(&metrics::REGISTRY);
+/// assert!(renderer.next_line().unwrap().is_some());
+/// ```
 #[macro_export]
 macro_rules! metrics {
     (registry = $registry:path; $($rest:tt)*) => {
@@ -376,15 +403,6 @@ macro_rules! __embeprom_register_mode {
     ([manual] $_group:expr) => {};
 }
 
-/// Register several metric groups with the global registry in one call. See
-/// [`crate::register`].
-#[macro_export]
-macro_rules! register_all {
-    ($($g:path),+ $(,)?) => {
-        $( $crate::register(&$g); )+
-    };
-}
-
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __embeprom_ty {
@@ -613,7 +631,7 @@ mod tests {
         // Further calls (and an explicit `register`, which dedups by static
         // identity) don't add a second entry.
         registration_metrics::get().requests.inc();
-        crate::register(&registration_metrics::METRICS);
+        crate::register(&registration_metrics::METRICS).unwrap();
         assert_eq!(
             crate::snapshot()
                 .iter()
@@ -726,7 +744,7 @@ mod tests {
     #[test]
     fn histogram_bounds_render_values_instead_of_rust_literal_spelling() {
         let registry = crate::Registry::<1>::new();
-        registry.register(literal_bucket_metrics::get());
+        registry.register(literal_bucket_metrics::get()).unwrap();
         let mut out = heapless::String::<512>::new();
         crate::Renderer::<1>::from_registry(&registry)
             .render_to(&mut out)
@@ -761,7 +779,7 @@ mod tests {
             .requests_by_reason
             .inc(&["auth_fail"]);
 
-        assert_eq!(NAMED_REGISTRY.len(), 1);
+        assert_eq!(NAMED_REGISTRY.snapshot().len(), 1);
         assert_eq!(named_registry_metrics::get().requests.get(), 2);
         let _: &crate::CounterVec<2, 1, 18> = &named_registry_metrics::get().requests_by_reason;
         assert_eq!(
@@ -788,13 +806,17 @@ mod tests {
     #[test]
     fn manual_group_can_be_registered_with_multiple_registries() {
         manual_metrics::get().requests.inc();
-        assert!(MANUAL_REGISTRY_A.is_empty());
-        assert!(MANUAL_REGISTRY_B.is_empty());
+        assert!(MANUAL_REGISTRY_A.snapshot().is_empty());
+        assert!(MANUAL_REGISTRY_B.snapshot().is_empty());
 
-        MANUAL_REGISTRY_A.register(&manual_metrics::METRICS);
-        MANUAL_REGISTRY_B.register(&manual_metrics::METRICS);
-        assert_eq!(MANUAL_REGISTRY_A.len(), 1);
-        assert_eq!(MANUAL_REGISTRY_B.len(), 1);
+        MANUAL_REGISTRY_A
+            .register(&manual_metrics::METRICS)
+            .unwrap();
+        MANUAL_REGISTRY_B
+            .register(&manual_metrics::METRICS)
+            .unwrap();
+        assert_eq!(MANUAL_REGISTRY_A.snapshot().len(), 1);
+        assert_eq!(MANUAL_REGISTRY_B.snapshot().len(), 1);
         assert_eq!(manual_metrics::get().requests.get(), 1);
     }
 }

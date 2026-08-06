@@ -24,23 +24,10 @@ fn same_group(a: &dyn MetricGroup, b: &dyn MetricGroup) -> bool {
     }
 }
 
-/// Returned by [`Registry::try_register`] when the registry is already at
+/// Returned by [`Registry::register`] when the registry is already at
 /// capacity `N`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegistryFull;
-
-/// Returned by [`install_registry`] when a caller-owned registry cannot be
-/// installed as the process-wide registration target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InstallRegistryError {
-    /// A registry was already installed, or the built-in registry has already
-    /// been used. The active target cannot change after registration begins.
-    AlreadyInUse,
-    /// The registry would not fit in the default [`crate::Renderer`]'s group
-    /// snapshot. Enable a sufficiently large `max-groups-*` feature or render
-    /// the registry directly with [`crate::Renderer::from_registry`].
-    CapacityExceedsMaxGroups { requested: usize, max: usize },
-}
 
 /// A snapshot of the groups registered with a [`Registry`] at a point in time.
 pub type GroupSnapshot<const N: usize = { crate::config::MAX_GROUPS }> =
@@ -59,29 +46,15 @@ impl<const N: usize> Registry<N> {
         }
     }
 
-    /// Register a metric group. Panics if the registry is already at
-    /// capacity `N` — registration happens at startup, so failing loudly is
-    /// preferable to silently dropping a whole crate's metrics.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the registry already contains `N` distinct groups.
-    pub fn register(&self, group: &'static dyn MetricGroup) {
-        self.try_register(group)
-            .expect("embeprom: registry is full, increase capacity N");
-    }
-
-    /// Register a metric group, returning [`RegistryFull`] instead of
-    /// panicking if the registry is already at capacity `N`. Registering the
-    /// same group (by static identity) more than once is a no-op — this
-    /// lets explicit [`register`] calls coexist safely with a group that
-    /// also self-registers via [`OnceRegister`].
+    /// Register a metric group. Registering the same group (by static
+    /// identity) more than once is a no-op, so explicit [`register`] calls can
+    /// coexist with a group that also self-registers via [`OnceRegister`].
     ///
     /// # Errors
     ///
     /// Returns [`RegistryFull`] if the registry already contains `N`
     /// distinct groups.
-    pub fn try_register(&self, group: &'static dyn MetricGroup) -> Result<(), RegistryFull> {
+    pub fn register(&self, group: &'static dyn MetricGroup) -> Result<(), RegistryFull> {
         critical_section::with(|cs| {
             let mut groups = self.groups.borrow_ref_mut(cs);
             if groups.iter().any(|g| same_group(*g, group)) {
@@ -95,16 +68,6 @@ impl<const N: usize> Registry<N> {
     pub fn snapshot(&self) -> Vec<&'static dyn MetricGroup, N> {
         critical_section::with(|cs| self.groups.borrow_ref(cs).clone())
     }
-
-    /// Number of currently registered groups.
-    pub fn len(&self) -> usize {
-        critical_section::with(|cs| self.groups.borrow_ref(cs).len())
-    }
-
-    /// Whether no groups are registered.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
 impl<const N: usize> Default for Registry<N> {
@@ -113,113 +76,12 @@ impl<const N: usize> Default for Registry<N> {
     }
 }
 
+// Keep the singleton private so all global access goes through the small
+// registration and snapshot API. Caller-owned registries are ordinary
+// `Registry<N>` statics and can be rendered directly.
 static GLOBAL: Registry = Registry::new();
 
-trait RegistrationTarget: Sync {
-    fn try_register(&self, group: &'static dyn MetricGroup) -> Result<(), RegistryFull>;
-    fn snapshot(&self) -> GroupSnapshot;
-    fn len(&self) -> usize;
-}
-
-impl<const N: usize> RegistrationTarget for Registry<N> {
-    fn try_register(&self, group: &'static dyn MetricGroup) -> Result<(), RegistryFull> {
-        Registry::try_register(self, group)
-    }
-
-    fn snapshot(&self) -> GroupSnapshot {
-        let groups = Registry::snapshot(self);
-        let mut snapshot = GroupSnapshot::new();
-        for group in groups {
-            // `install_registry` rejects a registry whose capacity exceeds
-            // `MAX_GROUPS`; the built-in registry has exactly that capacity.
-            assert!(snapshot.push(group).is_ok());
-        }
-        snapshot
-    }
-
-    fn len(&self) -> usize {
-        Registry::len(self)
-    }
-}
-
-struct RegistrationState {
-    installed: Option<&'static dyn RegistrationTarget>,
-    in_use: bool,
-}
-
-struct RegistrationRouter {
-    state: Mutex<RefCell<RegistrationState>>,
-}
-
-impl RegistrationRouter {
-    const fn new() -> Self {
-        Self {
-            state: Mutex::new(RefCell::new(RegistrationState {
-                installed: None,
-                in_use: false,
-            })),
-        }
-    }
-
-    fn install(&self, target: &'static dyn RegistrationTarget) -> Result<(), InstallRegistryError> {
-        critical_section::with(|cs| {
-            let mut state = self.state.borrow_ref_mut(cs);
-            if state.in_use || state.installed.is_some() {
-                return Err(InstallRegistryError::AlreadyInUse);
-            }
-            state.installed = Some(target);
-            Ok(())
-        })
-    }
-
-    fn target(&self, fallback: &'static dyn RegistrationTarget) -> &'static dyn RegistrationTarget {
-        critical_section::with(|cs| {
-            let mut state = self.state.borrow_ref_mut(cs);
-            state.in_use = true;
-            state.installed.unwrap_or(fallback)
-        })
-    }
-}
-
-static REGISTRATION_ROUTER: RegistrationRouter = RegistrationRouter::new();
-
-fn active_registry() -> &'static dyn RegistrationTarget {
-    REGISTRATION_ROUTER.target(&GLOBAL)
-}
-
-/// Install a caller-owned registry as the process-wide registration target.
-///
-/// Call this once, before any call to [`register`], [`try_register`],
-/// [`snapshot`], [`group_count`], [`crate::Renderer::new`], or a default
-/// accessor generated by [`crate::metrics!`]. Thereafter, lazy and explicit
-/// global registration and [`crate::Renderer::new`] all use `registry`.
-///
-/// This preserves register-on-first-use across crate boundaries while letting
-/// the final application choose the registry capacity in source code. The
-/// installed capacity must not exceed [`crate::MAX_GROUPS`]; larger custom
-/// registries can still be used directly with
-/// [`crate::Renderer::from_registry`].
-///
-/// # Errors
-///
-/// Returns [`InstallRegistryError::AlreadyInUse`] if a registry is already
-/// installed or global registration has begun. Returns
-/// [`InstallRegistryError::CapacityExceedsMaxGroups`] if `N` exceeds
-/// [`crate::MAX_GROUPS`].
-pub fn install_registry<const N: usize>(
-    registry: &'static Registry<N>,
-) -> Result<(), InstallRegistryError> {
-    if N > crate::MAX_GROUPS {
-        return Err(InstallRegistryError::CapacityExceedsMaxGroups {
-            requested: N,
-            max: crate::MAX_GROUPS,
-        });
-    }
-    REGISTRATION_ROUTER.install(registry)
-}
-
-/// Register a metric group with the global registry. Panics if the global
-/// registry is already at capacity (see [`crate::MAX_GROUPS`]).
+/// Register a metric group with the global registry.
 ///
 /// Call this once per crate/library at startup, e.g.:
 ///
@@ -230,42 +92,24 @@ pub fn install_registry<const N: usize>(
 /// #         requests: Counter,
 /// #     }
 /// # }
-/// embeprom::register(&metrics::METRICS);
+/// embeprom::register(&metrics::METRICS).unwrap();
 /// ```
 ///
 /// Metrics groups declared with [`crate::metrics!`] self-register on first
 /// access (see [`OnceRegister`]), so calling this explicitly is optional for
-/// them. Explicit registration makes every metric visible from boot and turns
-/// insufficient registry capacity into an immediate startup failure.
-///
-/// # Panics
-///
-/// Panics if the active global registry is already at capacity.
-pub fn register(group: &'static dyn MetricGroup) {
-    active_registry()
-        .try_register(group)
-        .expect("embeprom: registry is full, increase its capacity");
-}
-
-/// Register a metric group with the global registry, without panicking if
-/// the registry is full.
+/// them. Explicit registration makes every metric visible from boot and lets
+/// startup code decide how to handle insufficient registry capacity.
 ///
 /// # Errors
 ///
-/// Returns [`RegistryFull`] if the active global registry is already at
-/// capacity.
-pub fn try_register(group: &'static dyn MetricGroup) -> Result<(), RegistryFull> {
-    active_registry().try_register(group)
+/// Returns [`RegistryFull`] if the global registry is already at capacity.
+pub fn register(group: &'static dyn MetricGroup) -> Result<(), RegistryFull> {
+    GLOBAL.register(group)
 }
 
 /// Copy out the groups currently registered with the global registry.
 pub fn snapshot() -> GroupSnapshot {
-    active_registry().snapshot()
-}
-
-/// Number of groups currently registered with the global registry.
-pub fn group_count() -> usize {
-    active_registry().len()
+    GLOBAL.snapshot()
 }
 
 const UNREGISTERED: u8 = 0;
@@ -278,7 +122,7 @@ const REGISTERED: u8 = 2;
 /// [`crate::metrics!`] so that recording a metric for the first time
 /// self-registers its group, with no explicit `main()`-side call needed.
 ///
-/// The uncontended one-time cost is a single [`try_register`] call; every
+/// The uncontended one-time cost is a single [`register`] call; every
 /// later call is one `Acquire` load of an atomic state. A caller concurrent
 /// with the first registration may repeat the deduplicated registration
 /// attempt so it never returns while the group is still absent. If the
@@ -302,7 +146,7 @@ impl OnceRegister {
     /// Register `group` with the global registry if this is the first call;
     /// a no-op on every later call.
     pub fn ensure(&self, group: &'static dyn MetricGroup) {
-        self.ensure_with(group, || try_register(group));
+        self.ensure_with(group, || register(group));
     }
 
     /// Register `group` with `registry` if this is the first call; a no-op on
@@ -313,7 +157,7 @@ impl OnceRegister {
         registry: &Registry<N>,
         group: &'static dyn MetricGroup,
     ) {
-        self.ensure_with(group, || registry.try_register(group));
+        self.ensure_with(group, || registry.register(group));
     }
 
     fn ensure_with(
@@ -339,7 +183,7 @@ impl OnceRegister {
 
         // A concurrent caller that observes REGISTERING must not return before
         // registration has happened. Repeating the attempt is safe because
-        // Registry::try_register deduplicates the group, and unlike spinning,
+        // Registry::register deduplicates the group, and unlike spinning,
         // this cannot deadlock when the caller is an interrupt handler that
         // preempted the first caller.
         let result = register();
@@ -415,21 +259,16 @@ mod tests {
     static B: EmptyGroup = EmptyGroup("b");
     static C: EmptyGroup = EmptyGroup("c");
     static D: EmptyGroup = EmptyGroup("d");
-    static ROUTED: EmptyGroup = EmptyGroup("routed");
     static ZERO_SIZED_A: ZeroSizedA = ZeroSizedA;
     static ZERO_SIZED_B: ZeroSizedB = ZeroSizedB;
-    static ROUTER_REGISTRY: Registry<1> = Registry::new();
-    static ROUTER_FALLBACK: Registry<1> = Registry::new();
-    static TEST_ROUTER: RegistrationRouter = RegistrationRouter::new();
 
     #[test]
     fn registers_and_snapshots() {
         let r: Registry<2> = Registry::new();
-        assert!(r.is_empty());
+        assert!(r.snapshot().is_empty());
 
-        r.register(&A);
-        r.register(&B);
-        assert_eq!(r.len(), 2);
+        r.register(&A).unwrap();
+        r.register(&B).unwrap();
 
         let snap = r.snapshot();
         assert_eq!(snap.len(), 2);
@@ -438,40 +277,32 @@ mod tests {
     }
 
     #[test]
-    fn try_register_reports_full_without_panicking() {
+    fn register_reports_full() {
         let r: Registry<1> = Registry::new();
-        assert_eq!(r.try_register(&A), Ok(()));
-        assert_eq!(r.try_register(&B), Err(RegistryFull));
-        assert_eq!(r.len(), 1);
+        assert_eq!(r.register(&A), Ok(()));
+        assert_eq!(r.register(&B), Err(RegistryFull));
+        assert_eq!(r.snapshot().len(), 1);
     }
 
     #[test]
     fn registering_the_same_group_twice_is_a_no_op() {
         let r: Registry<1> = Registry::new();
-        assert_eq!(r.try_register(&A), Ok(()));
-        assert_eq!(r.try_register(&A), Ok(()));
-        assert_eq!(r.len(), 1);
+        assert_eq!(r.register(&A), Ok(()));
+        assert_eq!(r.register(&A), Ok(()));
+        assert_eq!(r.snapshot().len(), 1);
     }
 
     #[test]
     fn distinct_zero_sized_group_types_register_independently() {
         let r: Registry<2> = Registry::new();
-        assert_eq!(r.try_register(&ZERO_SIZED_A), Ok(()));
-        assert_eq!(r.try_register(&ZERO_SIZED_B), Ok(()));
-        assert_eq!(r.len(), 2);
-    }
-
-    #[test]
-    #[should_panic(expected = "registry is full")]
-    fn register_panics_when_full() {
-        let r: Registry<1> = Registry::new();
-        r.register(&A);
-        r.register(&B);
+        assert_eq!(r.register(&ZERO_SIZED_A), Ok(()));
+        assert_eq!(r.register(&ZERO_SIZED_B), Ok(()));
+        assert_eq!(r.snapshot().len(), 2);
     }
 
     #[test]
     fn global_registry_accepts_registration() {
-        register(&C);
+        register(&C).unwrap();
         assert_eq!(
             snapshot()
                 .iter()
@@ -504,7 +335,7 @@ mod tests {
 
         once.ensure_in(&registry, &A);
         once.ensure_in(&registry, &A);
-        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.snapshot().len(), 1);
     }
 
     #[test]
@@ -519,18 +350,5 @@ mod tests {
         });
 
         assert!(attempted.get());
-    }
-
-    #[test]
-    fn registration_router_installs_one_target_before_first_use() {
-        assert_eq!(TEST_ROUTER.install(&ROUTER_REGISTRY), Ok(()));
-        let target = TEST_ROUTER.target(&ROUTER_FALLBACK);
-        assert_eq!(target.try_register(&ROUTED), Ok(()));
-        assert_eq!(ROUTER_REGISTRY.len(), 1);
-        assert!(ROUTER_FALLBACK.is_empty());
-        assert_eq!(
-            TEST_ROUTER.install(&ROUTER_FALLBACK),
-            Err(InstallRegistryError::AlreadyInUse)
-        );
     }
 }

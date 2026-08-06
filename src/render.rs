@@ -839,37 +839,6 @@ pub fn write_all<W: Write>(w: &mut W) -> Result<(), RenderError> {
     Renderer::new().render_to(w)
 }
 
-/// The byte length of a full render pass over the global registry.
-///
-/// This does a complete, discarded render, so it costs as much as an actual
-/// scrape and the returned value can go stale immediately if a metric
-/// changes afterwards. It exists only for integrations that need
-/// `Content-Length` up front; prefer a chunked/streaming response
-/// driven by [`Renderer::next_line`] wherever possible.
-///
-/// # Errors
-///
-/// Returns a [`RenderError`] if the discarded render exceeds a configured
-/// capacity or a metric cannot format its value.
-pub fn rendered_len() -> Result<usize, RenderError> {
-    rendered_len_from(Renderer::new())
-}
-
-fn rendered_len_from<const N: usize, const L: usize, const H: usize>(
-    mut renderer: Renderer<N, L, H>,
-) -> Result<usize, RenderError> {
-    struct ByteCount(usize);
-    impl Write for ByteCount {
-        fn write_str(&mut self, s: &str) -> fmt::Result {
-            self.0 += s.len();
-            Ok(())
-        }
-    }
-    let mut counter = ByteCount(0);
-    renderer.render_to(&mut counter)?;
-    Ok(counter.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -882,18 +851,6 @@ mod tests {
     use crate::value::Value;
     #[cfg(feature = "consistent-histograms")]
     use crate::vec::IntHistogramVec;
-
-    static RENDERED_LEN_REGISTRY: Registry<1> = Registry::new();
-
-    mod rendered_len_metrics {
-        crate::metrics! {
-            registry = super::RENDERED_LEN_REGISTRY;
-            namespace = "rendered_len_test";
-
-            /// Total test requests.
-            requests: Counter,
-        }
-    }
 
     struct FixtureCounterVec {
         labels: [&'static str; 2],
@@ -1092,7 +1049,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
         seed_golden_fixture(&GOLDEN_FIXTURE_A);
 
         let registry = Registry::<1>::new();
-        registry.register(&GOLDEN_FIXTURE_A);
+        registry.register(&GOLDEN_FIXTURE_A).unwrap();
         let mut out = heapless::String::<4096>::new();
         Renderer::<4>::from_registry(&registry)
             .render_to(&mut out)
@@ -1106,7 +1063,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
         seed_golden_fixture(&GOLDEN_FIXTURE_B);
 
         let registry = Registry::<1>::new();
-        registry.register(&GOLDEN_FIXTURE_B);
+        registry.register(&GOLDEN_FIXTURE_B).unwrap();
         let mut renderer = Renderer::<4>::from_registry(&registry);
         let mut assembled = heapless::String::<4096>::new();
         while let Some(line) = renderer.next_line().unwrap() {
@@ -1128,8 +1085,8 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
     #[test]
     fn from_registry_accepts_a_smaller_registry_capacity() {
         let registry = Registry::<2>::new();
-        registry.register(&GOLDEN_FIXTURE_A);
-        registry.register(&GOLDEN_FIXTURE_B);
+        registry.register(&GOLDEN_FIXTURE_A).unwrap();
+        registry.register(&GOLDEN_FIXTURE_B).unwrap();
 
         let renderer = Renderer::<4>::from_registry(&registry);
         assert_eq!(renderer.groups.len(), 2);
@@ -1147,7 +1104,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
     fn line_overflow_is_exact_explicit_and_terminal() {
         const FIRST_LINE: &str = "# HELP wifi_packets_sent Total Wi-Fi frames transmitted.\n";
         let registry = Registry::<1>::new();
-        registry.register(&GOLDEN_FIXTURE_A);
+        registry.register(&GOLDEN_FIXTURE_A).unwrap();
         let mut renderer = Renderer::<1, 16>::from_registry(&registry);
         let expected = RenderError::LineTooLong {
             required: FIRST_LINE.len(),
@@ -1165,7 +1122,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
     fn exact_line_capacity_succeeds() {
         const FIRST_LINE: &str = "# HELP wifi_packets_sent Total Wi-Fi frames transmitted.\n";
         let registry = Registry::<1>::new();
-        registry.register(&GOLDEN_FIXTURE_A);
+        registry.register(&GOLDEN_FIXTURE_A).unwrap();
         let mut renderer = Renderer::<1, { FIRST_LINE.len() }>::from_registry(&registry);
         assert_eq!(renderer.next_line(), Ok(Some(FIRST_LINE)));
     }
@@ -1180,7 +1137,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
         }
 
         let registry = Registry::<1>::new();
-        registry.register(&GOLDEN_FIXTURE_A);
+        registry.register(&GOLDEN_FIXTURE_A).unwrap();
         let mut renderer = Renderer::<1>::from_registry(&registry);
         assert_eq!(renderer.render_to(&mut Reject), Err(RenderError::Sink));
         assert_eq!(renderer.next_line(), Err(RenderError::Sink));
@@ -1267,7 +1224,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
             .bucket_reads
             .load(portable_atomic::Ordering::Relaxed);
         let registry = Registry::<1>::new();
-        registry.register(&COUNTING_HISTOGRAM_GROUP);
+        registry.register(&COUNTING_HISTOGRAM_GROUP).unwrap();
         let mut out = heapless::String::<512>::new();
         Renderer::<1>::from_registry(&registry)
             .render_to(&mut out)
@@ -1317,7 +1274,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
     fn scalar_histogram_snapshot_survives_updates_between_lines() {
         CONSISTENT_SCALAR_GROUP.histogram.observe(1);
         let registry = Registry::<1>::new();
-        registry.register(&CONSISTENT_SCALAR_GROUP);
+        registry.register(&CONSISTENT_SCALAR_GROUP).unwrap();
         let mut renderer = Renderer::<1, 256, 1>::from_registry(&registry);
 
         assert!(renderer.next_line().unwrap().unwrap().starts_with("# HELP"));
@@ -1375,7 +1332,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
     fn zero_bucket_histogram_is_snapshotted_before_the_infinite_bucket() {
         ZERO_BUCKET_SNAPSHOT_GROUP.histogram.observe(5);
         let registry = Registry::<1>::new();
-        registry.register(&ZERO_BUCKET_SNAPSHOT_GROUP);
+        registry.register(&ZERO_BUCKET_SNAPSHOT_GROUP).unwrap();
         let mut renderer = Renderer::<1, 256, 0>::from_registry(&registry);
 
         assert!(renderer.next_line().unwrap().unwrap().starts_with("# HELP"));
@@ -1429,7 +1386,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
     fn histogram_vec_snapshot_survives_updates_between_lines() {
         CONSISTENT_VEC_GROUP.histogram.observe(&["a"], 1);
         let registry = Registry::<1>::new();
-        registry.register(&CONSISTENT_VEC_GROUP);
+        registry.register(&CONSISTENT_VEC_GROUP).unwrap();
         let mut renderer = Renderer::<1, 256, 1>::from_registry(&registry);
 
         assert!(renderer.next_line().unwrap().unwrap().starts_with("# HELP"));
@@ -1486,7 +1443,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
     #[test]
     fn histogram_snapshot_capacity_error_is_explicit_and_terminal() {
         let registry = Registry::<1>::new();
-        registry.register(&SNAPSHOT_CAPACITY_GROUP);
+        registry.register(&SNAPSHOT_CAPACITY_GROUP).unwrap();
         let mut renderer = Renderer::<1, 256, 2>::from_registry(&registry);
         let expected = RenderError::HistogramCapacityExceeded {
             required: 3,
@@ -1517,7 +1474,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
     #[test]
     fn groups_with_no_metrics_are_skipped() {
         let registry = Registry::<1>::new();
-        registry.register(&EMPTY_GROUP);
+        registry.register(&EMPTY_GROUP).unwrap();
         let mut out = heapless::String::<64>::new();
         Renderer::<4>::from_registry(&registry)
             .render_to(&mut out)
@@ -1563,7 +1520,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
     #[test]
     fn zero_series_vec_still_emits_help_and_type() {
         let registry = Registry::<1>::new();
-        registry.register(&ZERO_SERIES_GROUP);
+        registry.register(&ZERO_SERIES_GROUP).unwrap();
         let mut out = heapless::String::<256>::new();
         Renderer::<4>::from_registry(&registry)
             .render_to(&mut out)
@@ -1573,18 +1530,5 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
             "# HELP zero_requests_by_code Requests by status code.\n\
              # TYPE zero_requests_by_code counter\n"
         );
-    }
-
-    #[test]
-    fn rendered_len_matches_render_for_an_isolated_registry() {
-        rendered_len_metrics::get().requests.inc_by(9_999);
-
-        let mut out = heapless::String::<256>::new();
-        Renderer::<1>::from_registry(&RENDERED_LEN_REGISTRY)
-            .render_to(&mut out)
-            .unwrap();
-        let len = rendered_len_from(Renderer::<1>::from_registry(&RENDERED_LEN_REGISTRY)).unwrap();
-
-        assert_eq!(len, out.len());
     }
 }

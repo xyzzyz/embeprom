@@ -144,22 +144,19 @@ fight one of them.
 | `macros.rs` | The `metrics!` macro — the only place that ties a user's declaration syntax to the generated struct/impl. |
 | `escape.rs`, `value.rs`, `config.rs` | Leaf utilities: exposition-format escaping/validation, the type-erased sample `Value`, and feature-gated capacity constants. |
 
-**Registration is a lattice, not a single path, and both ends must agree.**
-A group can be registered explicitly (`register()`, panics/errors on a full
-registry — a startup-time signal) or lazily (`OnceRegister::ensure`, called
-from the macro-generated accessor on first use — logs at most once and never
-panics, since by then it's not startup anymore). Both ultimately call
-`Registry::try_register`, which dedups non-zero-sized groups by static data
-address and zero-sized groups by concrete type, specifically so a group can
-go through *either or both* paths without being double-counted. If you add a
-third way to register a group, route it through `try_register` too, or this
-invariant breaks.
+**Explicit and lazy registration share one fallible primitive.** A group can
+be registered explicitly (`register()`, returning `RegistryFull` for startup
+code to handle) or lazily (`OnceRegister::ensure`, called from the
+macro-generated accessor on first use — logs at most once and never panics,
+since by then it is usually a hot-path metric write). Both ultimately call
+`Registry::register`, which dedups non-zero-sized groups by static data address
+and zero-sized groups by concrete type, so a group can go through *either or
+both* paths without being double-counted.
 
-The built-in registry is only the default target. A final application can
-call `install_registry(&REGISTRY)` before any metrics are touched to route
-lazy registration from every dependency into a caller-owned `Registry<N>`.
-When a registry is directly visible to a declaration module,
-`metrics! { registry = REGISTRY; ... }` targets it without installation.
+The built-in registry is the default target. A caller-owned `Registry<N>` can
+have any capacity; `metrics! { registry = REGISTRY; ... }` preserves lazy
+registration when that registry is visible to the declaration module, and
+`Renderer::from_registry(&REGISTRY)` renders it directly.
 `metrics! { registration = manual; ... }` disables `get()` registration so
 the same module's `METRICS` static can be registered explicitly with multiple
 registries.
@@ -180,8 +177,8 @@ several odd-looking tricks in `macros.rs`.** No `syn`/`quote`/workspace, so:
 indexed access into a variable-length metric list is a generated
 `if i == 0 { return .. } i -= 1;` chain (no arithmetic on repetitions in
 stable `macro_rules!`); counting repetitions into const-generic position
-goes through `<[()]>::len(&[(), (), ...])`. Histogram bucket bounds remain
-typed through the type-erased renderer boundary and are formatted as
+uses the length of a generated array of stringified tokens. Histogram bucket
+bounds remain typed through the type-erased renderer boundary and are formatted as
 Prometheus values there, so Rust-specific literal spelling never leaks into
 `le="..."` labels. If a change seems to need real parsing/codegen, it probably
 means outgrowing plain

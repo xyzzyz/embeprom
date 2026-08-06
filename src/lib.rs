@@ -67,27 +67,35 @@
 //! #         packets_sent: Counter,
 //! #     }
 //! # }
-//! embeprom::register(&metrics::METRICS);
-//! // or, for several crates at once:
-//! // embeprom::register_all!(wifi::metrics::METRICS, net::metrics::METRICS);
+//! embeprom::register(&metrics::METRICS).unwrap();
 //! ```
 //!
 //! Calling [`register`] for a group that already self-registered (or vice
-//! versa) is safe: [`Registry::try_register`] dedups by static identity, so
+//! versa) is safe: [`Registry::register`] dedups by static identity, so
 //! a group is never counted twice.
 //!
-//! The final application can install a smaller caller-owned registry before
-//! any metrics are touched. Lazy registration from any dependency will then
-//! target it, and [`Renderer::new`] will render it:
+//! A caller-owned registry can have any capacity. Name it in a declaration to
+//! retain register-on-first-use, then render that registry directly:
 //!
-//! ```no_run
-//! static REGISTRY: embeprom::Registry<8> = embeprom::Registry::new();
-//! embeprom::install_registry(&REGISTRY).unwrap();
+//! ```
+//! mod application_metrics {
+//!     pub static REGISTRY: embeprom::Registry<8> = embeprom::Registry::new();
+//!
+//!     embeprom::metrics! {
+//!         registry = REGISTRY;
+//!
+//!         /// Completed jobs.
+//!         jobs_completed: Counter,
+//!     }
+//! }
+//!
+//! application_metrics::get().jobs_completed.inc();
+//! let mut renderer =
+//!     embeprom::Renderer::<8>::from_registry(&application_metrics::REGISTRY);
+//! assert!(renderer.next_line().unwrap().is_some());
 //! ```
 //!
-//! A metrics group can instead name a directly visible registry with
-//! `metrics! { registry = REGISTRY; ... }`, or use
-//! `metrics! { registration = manual; ... }` when the module's `METRICS`
+//! Use `metrics! { registration = manual; ... }` when the module's `METRICS`
 //! static should be registered explicitly with one or more registries.
 //!
 //! # Exporting
@@ -103,6 +111,15 @@
 //! while let Some(line) = renderer.next_line().unwrap() {
 //!     // send `line.as_bytes()` to whatever sink you have.
 //! }
+//! ```
+//!
+//! [`Renderer::new`] snapshots the built-in global registry. Render a specific
+//! caller-owned registry with [`Renderer::from_registry`]:
+//!
+//! ```
+//! let registry = embeprom::Registry::<4>::new();
+//! let renderer = embeprom::Renderer::<4>::from_registry(&registry);
+//! assert!(renderer.is_done());
 //! ```
 //!
 //! The default renderer holds one line of at most [`MAX_LINE`] bytes. Select a
@@ -156,10 +173,9 @@
 //!
 //! [`Content`](https://docs.rs/picoserve/latest/picoserve/response/trait.Content.html)
 //! (picoserve's fixed-length response body trait) is deliberately not used
-//! here: it requires knowing the total body length up front, which would
-//! force a full discarded render pass first (see [`rendered_len`], which
-//! exists for exactly that but is documented as a last resort) and can go
-//! stale between that pass and the real one since metrics are live atomics.
+//! here: it requires knowing the total body length up front. A discarded
+//! render pass cannot provide that guarantee because metrics and labeled
+//! series can change before the response body is rendered.
 //!
 //! # Labeled metrics and cardinality
 //!
@@ -202,11 +218,8 @@ pub use erased::{HistogramSnapshot, HistogramSnapshotError};
 pub use escape::{valid_label_name, valid_metric_name};
 pub use gauge::Gauge;
 pub use histogram::IntHistogram;
-pub use registry::{
-    GroupSnapshot, InstallRegistryError, OnceRegister, Registry, RegistryFull, group_count,
-    install_registry, register, snapshot, try_register,
-};
-pub use render::{CONTENT_TYPE, RenderError, Renderer, rendered_len, write_all};
+pub use registry::{GroupSnapshot, OnceRegister, Registry, RegistryFull, register, snapshot};
+pub use render::{CONTENT_TYPE, RenderError, Renderer, write_all};
 pub use value::Value;
 pub use vec::{CounterSeries, CounterVec, GaugeSeries, GaugeVec, IntHistSeries, IntHistogramVec};
 
