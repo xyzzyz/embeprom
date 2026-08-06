@@ -19,7 +19,8 @@ pub const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 /// A failure while producing or writing Prometheus exposition text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderError {
-    /// One complete line did not fit in the renderer's line buffer.
+    /// One complete line did not fit in the renderer's line buffer. The line
+    /// is skipped and the cursor advances.
     LineTooLong {
         /// Exact number of bytes required for the line.
         required: usize,
@@ -31,7 +32,7 @@ pub enum RenderError {
         metric: &'static str,
     },
     /// A histogram has more finite buckets than the renderer can snapshot
-    /// while `consistent-histograms` is enabled.
+    /// while `consistent-histograms` is enabled. The metric family is skipped.
     HistogramCapacityExceeded {
         /// Number of finite buckets declared by the histogram.
         required: usize,
@@ -417,7 +418,9 @@ fn render_bucket<const H: usize>(
             (h.bound(bucket), snapshot.scalar_bucket(*h, bucket))
         }
         MetricRef::HistogramVec { h } => {
-            let series = series.expect("embeprom: HistogramVec Bucket step requires Some(series)");
+            let Some(series) = series else {
+                return Err(fmt::Error);
+            };
             h.write_labels(series, line)?;
             line.write_char(',')?;
             (h.bound(bucket), snapshot.vec_bucket(*h, series, bucket))
@@ -582,34 +585,32 @@ fn render_step<const H: usize>(
 /// `N` is the group snapshot capacity, `L` is the maximum rendered line
 /// length, and `H` is the finite-bucket scratch capacity used by
 /// `consistent-histograms`. Callers can tune each independently instead of
-/// paying a crate-wide memory cost. Capacity failures are explicit and
-/// terminal.
+/// paying a crate-wide memory cost. Capacity failures are explicit and the
+/// cursor advances past the line or metric that could not be rendered.
 pub struct Renderer<
     const N: usize = { crate::config::MAX_GROUPS },
     const L: usize = { crate::config::MAX_LINE },
     const H: usize = { crate::config::MAX_HISTOGRAM_BUCKETS },
 > {
     groups: GroupSnapshot<N>,
-    g: usize,
-    m: usize,
+    group_index: usize,
+    metric_index: usize,
     step: Step,
     line: LineBuffer<L>,
     histogram: HistogramScratch<H>,
     histogram_cumulative: u64,
-    failed: Option<RenderError>,
 }
 
 impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
     fn from_snapshot(groups: GroupSnapshot<N>) -> Self {
         Self {
             groups,
-            g: 0,
-            m: 0,
+            group_index: 0,
+            metric_index: 0,
             step: Step::Help,
             line: LineBuffer::new(),
             histogram: HistogramScratch::new(),
             histogram_cumulative: 0,
-            failed: None,
         }
     }
 
@@ -617,8 +618,8 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
     ///
     /// ```
     /// let registry: embeprom::Registry<4> = embeprom::Registry::new();
-    /// let renderer = embeprom::Renderer::<4>::from_registry(&registry);
-    /// assert!(renderer.is_done());
+    /// let mut renderer = embeprom::Renderer::<4>::from_registry(&registry);
+    /// assert_eq!(renderer.next_line(), Ok(None));
     /// ```
     ///
     /// The registry may have a smaller capacity than the renderer, but not a
@@ -646,19 +647,13 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
         Self::from_snapshot(groups)
     }
 
-    /// Whether every group has been rendered successfully. A renderer in a
-    /// terminal error state is not considered done.
-    pub fn is_done(&self) -> bool {
-        self.failed.is_none() && self.g >= self.groups.len()
-    }
-
     /// The next complete output line, including its trailing `\n`, or
     /// `Ok(None)` once every registered group has been fully rendered.
     ///
-    /// An error is terminal and is returned again by every later call. In
-    /// particular, a line that exceeds capacity `L`, or a histogram that
-    /// exceeds snapshot capacity `H`, is never silently skipped and rendering
-    /// cannot continue with a partial metric family.
+    /// An error advances the cursor rather than poisoning it. A line that
+    /// exceeds capacity `L` is skipped, so the caller can record the error and
+    /// call `next_line` again to continue with the next line. A histogram that
+    /// exceeds snapshot capacity `H` skips the rest of that metric family.
     ///
     /// # Errors
     ///
@@ -667,33 +662,28 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
     /// is insufficient, and [`RenderError::Formatting`] if a type-erased
     /// metric cannot format its value.
     pub fn next_line(&mut self) -> Result<Option<&str>, RenderError> {
-        if let Some(error) = self.failed {
-            return Err(error);
-        }
-
         loop {
-            if self.g >= self.groups.len() {
+            let Some(&group) = self.groups.get(self.group_index) else {
                 return Ok(None);
-            }
-            let group = self.groups[self.g];
-            if self.m >= group.len() {
-                self.g += 1;
-                self.m = 0;
+            };
+            if self.metric_index >= group.len() {
+                self.group_index += 1;
+                self.metric_index = 0;
                 self.step = Step::Help;
                 continue;
             }
-            let Some(desc) = group.get(self.m) else {
-                self.m += 1;
+            let Some(desc) = group.get(self.metric_index) else {
+                self.metric_index += 1;
                 self.step = Step::Help;
                 continue;
             };
             if matches!(self.step, Step::Advance) {
-                self.m += 1;
+                self.metric_index += 1;
                 self.step = Step::Help;
                 continue;
             }
 
-            let cur_step = self.step;
+            let current_step = self.step;
 
             #[cfg(feature = "consistent-histograms")]
             {
@@ -702,8 +692,8 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
                     MetricRef::HistogramVec { h } => Some(h.bucket_count()),
                     _ => None,
                 };
-                if let Some(required) =
-                    bucket_count.filter(|required| matches!(cur_step, Step::Help) && *required > H)
+                if let Some(required) = bucket_count
+                    .filter(|required| matches!(current_step, Step::Help) && *required > H)
                 {
                     let error = RenderError::HistogramCapacityExceeded {
                         required,
@@ -711,11 +701,11 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
                         namespace: desc.namespace,
                         metric: desc.name,
                     };
-                    self.failed = Some(error);
+                    self.step = Step::Advance;
                     return Err(error);
                 }
 
-                let capture = match cur_step {
+                let capture = match current_step {
                     Step::Bucket { s, b: 0 } => self.histogram.capture(&desc.metric, s),
                     Step::BucketInf { s } if bucket_count == Some(0) => {
                         self.histogram.capture(&desc.metric, s)
@@ -729,7 +719,7 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
                         namespace: desc.namespace,
                         metric: desc.name,
                     };
-                    self.failed = Some(error);
+                    self.step = Step::Advance;
                     return Err(error);
                 }
             }
@@ -737,14 +727,14 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
             self.line.clear();
             if render_step(
                 &mut self.line,
-                cur_step,
+                current_step,
                 &desc,
                 &self.histogram,
                 &mut self.histogram_cumulative,
             )
             .is_err()
             {
-                self.failed = Some(RenderError::Formatting);
+                self.step = next_step(current_step, &desc);
                 return Err(RenderError::Formatting);
             }
             if self.line.overflowed {
@@ -754,17 +744,18 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
                     namespace: desc.namespace,
                     metric: desc.name,
                 };
-                self.failed = Some(error);
+                self.step = next_step(current_step, &desc);
                 return Err(error);
             }
 
-            self.step = next_step(cur_step, &desc);
+            self.step = next_step(current_step, &desc);
             return Ok(Some(self.line.text.as_str()));
         }
     }
 
-    /// Drain this renderer into `w`. A render-capacity, metric-formatting, or
-    /// sink failure is terminal and leaves the renderer in its error state.
+    /// Drain this renderer into `w` until completion or the first error. The
+    /// cursor has already advanced past the failed line or metric, so the
+    /// caller may handle the error and call `render_to` again to continue.
     ///
     /// # Errors
     ///
@@ -773,7 +764,6 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
     pub fn render_to<W: Write>(&mut self, w: &mut W) -> Result<(), RenderError> {
         while let Some(line) = self.next_line()? {
             if w.write_str(line).is_err() {
-                self.failed = Some(RenderError::Sink);
                 return Err(RenderError::Sink);
             }
         }
@@ -1070,7 +1060,6 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
             assert!(line.ends_with('\n'));
             assembled.push_str(line).unwrap();
         }
-        assert!(renderer.is_done());
         assert_eq!(assembled.as_str(), EXPECTED);
     }
 
@@ -1078,7 +1067,6 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
     fn empty_registry_renders_nothing() {
         let registry = Registry::<1>::new();
         let mut r: Renderer<4> = Renderer::from_registry(&registry);
-        assert!(r.is_done());
         assert_eq!(r.next_line(), Ok(None));
     }
 
@@ -1101,21 +1089,30 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
     }
 
     #[test]
-    fn line_overflow_is_exact_explicit_and_terminal() {
+    fn line_overflow_is_exact_and_the_next_call_continues() {
         const FIRST_LINE: &str = "# HELP wifi_packets_sent Total Wi-Fi frames transmitted.\n";
+        const SECOND_LINE: &str = "# TYPE wifi_packets_sent counter\n";
         let registry = Registry::<1>::new();
         registry.register(&GOLDEN_FIXTURE_A).unwrap();
-        let mut renderer = Renderer::<1, 16>::from_registry(&registry);
+        let mut renderer = Renderer::<1, 40>::from_registry(&registry);
         let expected = RenderError::LineTooLong {
             required: FIRST_LINE.len(),
-            capacity: 16,
+            capacity: 40,
             namespace: "wifi",
             metric: "packets_sent",
         };
 
         assert_eq!(renderer.next_line(), Err(expected));
-        assert_eq!(renderer.next_line(), Err(expected));
-        assert!(!renderer.is_done());
+        assert_eq!(renderer.next_line(), Ok(Some(SECOND_LINE)));
+
+        for _ in 0..128 {
+            match renderer.next_line() {
+                Ok(None) => return,
+                Ok(Some(_)) | Err(RenderError::LineTooLong { .. }) => {}
+                Err(error) => panic!("unexpected render error: {error}"),
+            }
+        }
+        panic!("renderer did not reach the end after recoverable line errors");
     }
 
     #[test]
@@ -1128,7 +1125,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
     }
 
     #[test]
-    fn sink_failure_is_terminal() {
+    fn sink_failure_advances_past_the_rejected_line() {
         struct Reject;
         impl Write for Reject {
             fn write_str(&mut self, _s: &str) -> fmt::Result {
@@ -1140,8 +1137,10 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
         registry.register(&GOLDEN_FIXTURE_A).unwrap();
         let mut renderer = Renderer::<1>::from_registry(&registry);
         assert_eq!(renderer.render_to(&mut Reject), Err(RenderError::Sink));
-        assert_eq!(renderer.next_line(), Err(RenderError::Sink));
-        assert!(!renderer.is_done());
+        assert_eq!(
+            renderer.next_line(),
+            Ok(Some("# TYPE wifi_packets_sent counter\n"))
+        );
     }
 
     struct CountingHistogram {
@@ -1441,7 +1440,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
 
     #[cfg(feature = "consistent-histograms")]
     #[test]
-    fn histogram_snapshot_capacity_error_is_explicit_and_terminal() {
+    fn histogram_snapshot_capacity_error_skips_the_metric() {
         let registry = Registry::<1>::new();
         registry.register(&SNAPSHOT_CAPACITY_GROUP).unwrap();
         let mut renderer = Renderer::<1, 256, 2>::from_registry(&registry);
@@ -1453,33 +1452,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
         };
 
         assert_eq!(renderer.next_line(), Err(expected));
-        assert_eq!(renderer.next_line(), Err(expected));
-        assert!(!renderer.is_done());
-    }
-
-    struct EmptyGroup;
-    impl MetricGroup for EmptyGroup {
-        fn group_name(&self) -> &'static str {
-            "empty"
-        }
-        fn len(&self) -> usize {
-            0
-        }
-        fn get(&self, _index: usize) -> Option<MetricDesc<'_>> {
-            None
-        }
-    }
-    static EMPTY_GROUP: EmptyGroup = EmptyGroup;
-
-    #[test]
-    fn groups_with_no_metrics_are_skipped() {
-        let registry = Registry::<1>::new();
-        registry.register(&EMPTY_GROUP).unwrap();
-        let mut out = heapless::String::<64>::new();
-        Renderer::<4>::from_registry(&registry)
-            .render_to(&mut out)
-            .unwrap();
-        assert_eq!(out.as_str(), "");
+        assert_eq!(renderer.next_line(), Ok(None));
     }
 
     struct ZeroSeriesVecGroup {

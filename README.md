@@ -90,8 +90,8 @@ every call and are intended for infrequent or genuinely dynamic labels.
 
 The second `Renderer` const generic is the line-buffer capacity, independently
 tunable from the registry capacity: `Renderer::with_line_capacity::<512>()`.
-An undersized buffer returns a terminal `RenderError::LineTooLong` containing
-the exact required size instead of omitting output.
+An undersized buffer returns `RenderError::LineTooLong` once with the exact
+required size, skips that line, and lets subsequent `next_line` calls continue.
 
 With `consistent-histograms`, the third const generic bounds reusable
 per-series histogram snapshot scratch (16 finite buckets by default). Tune both
@@ -149,9 +149,8 @@ be registered explicitly (`register()`, returning `RegistryFull` for startup
 code to handle) or lazily (`OnceRegister::ensure`, called from the
 macro-generated accessor on first use — logs at most once and never panics,
 since by then it is usually a hot-path metric write). Both ultimately call
-`Registry::register`, which dedups non-zero-sized groups by static data address
-and zero-sized groups by concrete type, so a group can go through *either or
-both* paths without being double-counted.
+`Registry::register`, which dedups groups by static data address so a group can
+go through *either or both* paths without being double-counted.
 
 The built-in registry is the default target. A caller-owned `Registry<N>` can
 have any capacity; `metrics! { registry = REGISTRY; ... }` preserves lazy
@@ -221,7 +220,7 @@ naturally integral and want the cheaper, exact path.
 with real Cortex-M boards, so "works" is established by: unit tests on host
 (`cargo test`, using `critical-section`'s `std` backend); a line-cursor golden
 test that reassembles `next_line` output and diffs it against the full expected
-exposition; explicit exact-capacity and terminal-overflow tests; and compiling
+exposition; explicit exact-capacity and overflow-recovery tests; and compiling
 and linking (not just running) a real firmware binary in `examples/no_std_check`
 against `thumbv7em-none-eabihf` and `thumbv6m-none-eabi`.
 

@@ -46,7 +46,8 @@
 //! called — via [`OnceRegister`], a one-shot guard, so this costs one atomic
 //! load on every call after registration completes. A caller concurrent with
 //! the first registration may make a harmless deduplicated attempt of its
-//! own. There is no explicit step to wire up in `main()`.
+//! own. No explicit step is required in `main()`, but one is available when
+//! the application wants eager registration or explicit capacity handling.
 //!
 //! This means a metrics group that's declared but never recorded stays
 //! absent from scrapes until first touched (it isn't visible at `0` from
@@ -74,29 +75,31 @@
 //! versa) is safe: [`Registry::register`] dedups by static identity, so
 //! a group is never counted twice.
 //!
-//! A caller-owned registry can have any capacity. Name it in a declaration to
-//! retain register-on-first-use, then render that registry directly:
+//! A caller-owned registry can have any capacity and does not need to be
+//! visible to the crates declaring metrics. The final application can
+//! explicitly register their public `METRICS` statics and render its registry
+//! directly:
 //!
 //! ```
-//! mod application_metrics {
-//!     pub static REGISTRY: embeprom::Registry<8> = embeprom::Registry::new();
-//!
+//! mod dependency_metrics {
 //!     embeprom::metrics! {
-//!         registry = REGISTRY;
-//!
 //!         /// Completed jobs.
 //!         jobs_completed: Counter,
 //!     }
 //! }
 //!
-//! application_metrics::get().jobs_completed.inc();
-//! let mut renderer =
-//!     embeprom::Renderer::<8>::from_registry(&application_metrics::REGISTRY);
+//! static REGISTRY: embeprom::Registry<8> = embeprom::Registry::new();
+//! REGISTRY.register(&dependency_metrics::METRICS).unwrap();
+//! dependency_metrics::get().jobs_completed.inc();
+//! let mut renderer = embeprom::Renderer::<8>::from_registry(&REGISTRY);
 //! assert!(renderer.next_line().unwrap().is_some());
 //! ```
 //!
-//! Use `metrics! { registration = manual; ... }` when the module's `METRICS`
-//! static should be registered explicitly with one or more registries.
+//! The same group may coexist in the global and caller-owned registries; each
+//! registry deduplicates it independently. A declaration can instead use
+//! `metrics! { registry = PATH; ... }` to lazily target a visible registry, or
+//! `metrics! { registration = manual; ... }` to opt that group out of global
+//! self-registration entirely.
 //!
 //! # Exporting
 //!
@@ -118,14 +121,17 @@
 //!
 //! ```
 //! let registry = embeprom::Registry::<4>::new();
-//! let renderer = embeprom::Renderer::<4>::from_registry(&registry);
-//! assert!(renderer.is_done());
+//! let mut renderer = embeprom::Renderer::<4>::from_registry(&registry);
+//! assert_eq!(renderer.next_line(), Ok(None));
 //! ```
 //!
 //! The default renderer holds one line of at most [`MAX_LINE`] bytes. Select a
 //! different bound with `Renderer::with_line_capacity::<512>()`.
 //! [`RenderError::LineTooLong`] reports the exact required capacity and is
-//! terminal rather than silently omitting part of the exposition.
+//! returned once; the cursor skips that line, so the caller can report the
+//! error and continue calling [`Renderer::next_line`] through the end of the
+//! exposition. A histogram snapshot-capacity error similarly skips the
+//! affected metric family.
 //! When `consistent-histograms` is enabled, the renderer also holds reusable
 //! scratch for [`MAX_HISTOGRAM_BUCKETS`] finite buckets. Tune both bounds with
 //! `Renderer::with_capacities::<LINE, HIST_BUCKETS>()`.
