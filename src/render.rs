@@ -890,7 +890,8 @@ mod tests {
             registry = super::RENDERED_LEN_REGISTRY;
             namespace = "rendered_len_test";
 
-            counter requests = "Total test requests.";
+            /// Total test requests.
+            requests: Counter,
         }
     }
 

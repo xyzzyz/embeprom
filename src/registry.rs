@@ -226,7 +226,8 @@ pub fn install_registry<const N: usize>(
 /// ```
 /// # mod metrics {
 /// #     embeprom::metrics! {
-/// #         counter requests = "Total requests.";
+/// #         /// Total requests.
+/// #         requests: Counter,
 /// #     }
 /// # }
 /// embeprom::register(&metrics::METRICS);

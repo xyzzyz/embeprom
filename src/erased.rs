@@ -192,8 +192,10 @@ mod tests {
         crate::metrics! {
             namespace = "fixture";
 
-            counter requests = "Total requests.";
-            gauge temperature = "Current temperature.";
+            /// Total requests.
+            requests: Counter,
+            /// Current temperature.
+            temperature: Gauge,
         }
     }
 

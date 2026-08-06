@@ -44,11 +44,16 @@ pub mod metrics {
     embeprom::metrics! {
         namespace = "wifi";
 
-        counter        packets_sent               = "Total Wi-Fi frames transmitted.";
-        gauge          rssi_dbm                   = "Last measured RSSI in dBm.";
-        counter_vec<4> disconnects_total["reason"] = "Disconnects, by reason.";
-        int_histogram  tx_latency_us[buckets: 100, 500, 1000, 5000]
-                                                   = "TX completion latency in microseconds.";
+        /// Total Wi-Fi frames transmitted.
+        packets_sent: Counter,
+        /// Last measured RSSI in dBm.
+        rssi_dbm: Gauge,
+        /// Disconnects, by reason.
+        #[labels("reason")]
+        disconnects_total: CounterVec<4>,
+        /// TX completion latency in microseconds.
+        #[buckets(100, 500, 1000, 5000)]
+        tx_latency_us: IntHistogram,
     }
 }
 
@@ -240,7 +245,7 @@ section of the crate docs for the full example.
 | `consistent-histograms` | Serialize scalar and vector histogram observations, then copy each series into renderer-owned scratch under one brief critical section. All `_bucket`/`_sum`/`_count` lines come from that immutable snapshot; scratch defaults to `MAX_HISTOGRAM_BUCKETS` finite buckets and is tunable per renderer. |
 | `log` | Log via the `log` crate (once per metric group, not per write) if a group fails to self-register because the registry is full. |
 | `std` | Pull in `critical-section`'s `std` backend; mainly useful for host-side testing. |
-| `label-value-{64,128}` | Increase the default 48-byte rendered label-block budget crate-wide. Feature unification selects the largest enabled value; per-metric capacities use the vec types' const generics or macro syntax such as `counter_vec<4, label_bytes: 24>`. |
+| `label-value-{64,128}` | Increase the default 48-byte rendered label-block budget crate-wide. Feature unification selects the largest enabled value; per-metric capacities use the vec types' const generics or macro attribute `#[label_bytes(24)]`. |
 | `max-groups-{32,64,128,256,512}` | Increase the default 16-group global registry capacity. Feature unification selects the largest enabled value; smaller applications can install a caller-owned `Registry<N>`. |
 
 ## `no_std` / embedded support

@@ -28,11 +28,16 @@
 ///     embeprom::metrics! {
 ///         namespace = "wifi";
 ///
-///         counter        packets_sent            = "Total Wi-Fi frames transmitted.";
-///         gauge          rssi_dbm                = "Last measured RSSI in dBm.";
-///         counter_vec<4> disconnects_total["reason"] = "Disconnects, by reason.";
-///         int_histogram  tx_latency_us[buckets: 100, 500, 1000, 5000]
-///                                                = "TX completion latency in microseconds.";
+///         /// Total Wi-Fi frames transmitted.
+///         packets_sent: Counter,
+///         /// Last measured RSSI in dBm.
+///         rssi_dbm: Gauge,
+///         /// Disconnects, by reason.
+///         #[labels("reason")]
+///         disconnects_total: CounterVec<4>,
+///         /// TX completion latency in microseconds.
+///         #[buckets(100, 500, 1000, 5000)]
+///         tx_latency_us: IntHistogram,
 ///     }
 /// }
 ///
@@ -41,9 +46,9 @@
 /// metrics::get().disconnects_total.inc(&["beacon_timeout"]);
 /// ```
 ///
-/// The help string is also used as the generated field's Rust documentation,
-/// so it appears alongside the concrete metric type and its methods in
-/// `cargo doc`. Put documentation for the group as a whole on its enclosing
+/// The first line of each field's Rust documentation is also used as its
+/// Prometheus help string. Further `///` lines remain part of the Rust
+/// documentation. Put documentation for the group as a whole on its enclosing
 /// module. Because the generated item names are fixed, invoke this macro at
 /// most once per module. A group must declare at least one metric:
 ///
@@ -53,15 +58,14 @@
 /// }
 /// ```
 ///
-/// Supported `kind`s: `counter`, `gauge`, `gauge_f64` (feature `float`),
-/// `counter_vec<N>`, `gauge_vec<N>`, `int_histogram[buckets: ...]`,
-/// `histogram[buckets: ...]` (feature `float`), `int_histogram_vec<N>`, and
-/// `histogram_vec<N>` (feature `float`). Vec kinds take label names in
-/// brackets (`["name"]` or `["name1", "name2"]`); histogram vec kinds
-/// combine label names and buckets separated by `;` (`["peer"; buckets: 10, 50]`).
-/// A vec can set its rendered label-block allocation independently of the
-/// crate-wide default with an optional second parameter, for example
-/// `counter_vec<4, label_bytes: 24>`.
+/// Supported types are [`crate::Counter`], [`crate::Gauge`], `GaugeF64`
+/// (feature `float`), `CounterVec<N>`, `GaugeVec<N>`,
+/// [`crate::IntHistogram`], `Histogram` (feature `float`),
+/// `IntHistogramVec<N>`, and `HistogramVec<N>` (feature `float`). Vec fields
+/// declare their label names with `#[labels("name", ...)]`; histogram fields
+/// declare finite bucket bounds with `#[buckets(10, 50, ...)]`. A vec can set
+/// its rendered label-block allocation independently of the crate-wide default
+/// with `#[label_bytes(24)]`.
 ///
 /// By default, the generated accessor lazily registers with the active global
 /// registry. Put `registry = PATH;` before the optional namespace and metric
@@ -85,10 +89,139 @@ macro_rules! metrics {
 #[macro_export]
 macro_rules! __embeprom_metrics_options {
     ([$($registration:tt)*] namespace = $ns:literal; $($rest:tt)*) => {
-        $crate::__embeprom_metrics_generate!([$($registration)*] [$ns] $($rest)*);
+        $crate::__embeprom_metrics_parse!([$($registration)*] [$ns] [] $($rest)*);
     };
     ([$($registration:tt)*] $($rest:tt)*) => {
-        $crate::__embeprom_metrics_generate!([$($registration)*] [] $($rest)*);
+        $crate::__embeprom_metrics_parse!([$($registration)*] [] [] $($rest)*);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __embeprom_metrics_parse {
+    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]) => {
+        $crate::__embeprom_metrics_generate!(
+            [$($registration)*]
+            [$($ns)?]
+            $($metrics)*
+        );
+    };
+
+    // Scalar metrics.
+    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+        #[doc = $help:literal] $(#[doc = $more_docs:literal])*
+        $field:ident: Counter, $($rest:tt)*) => {
+        $crate::__embeprom_metrics_parse!(
+            [$($registration)*] [$($ns)?]
+            [$($metrics)* #[doc = $help] $(#[doc = $more_docs])* counter $field = $help;]
+            $($rest)*
+        );
+    };
+    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+        #[doc = $help:literal] $(#[doc = $more_docs:literal])*
+        $field:ident: Gauge, $($rest:tt)*) => {
+        $crate::__embeprom_metrics_parse!(
+            [$($registration)*] [$($ns)?]
+            [$($metrics)* #[doc = $help] $(#[doc = $more_docs])* gauge $field = $help;]
+            $($rest)*
+        );
+    };
+    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+        #[doc = $help:literal] $(#[doc = $more_docs:literal])*
+        $field:ident: GaugeF64, $($rest:tt)*) => {
+        $crate::__embeprom_metrics_parse!(
+            [$($registration)*] [$($ns)?]
+            [$($metrics)* #[doc = $help] $(#[doc = $more_docs])* gauge_f64 $field = $help;]
+            $($rest)*
+        );
+    };
+
+    // Counter and gauge vectors.
+    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+        #[doc = $help:literal] $(#[doc = $more_docs:literal])*
+        #[labels($($label:literal),+)]
+        $(#[label_bytes($label_bytes:literal)])?
+        $field:ident: CounterVec<$cap:literal>, $($rest:tt)*) => {
+        $crate::__embeprom_metrics_parse!(
+            [$($registration)*] [$($ns)?]
+            [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
+                counter_vec<$cap $(, label_bytes: $label_bytes)?> $field[$($label),+] = $help;]
+            $($rest)*
+        );
+    };
+    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+        #[doc = $help:literal] $(#[doc = $more_docs:literal])*
+        #[labels($($label:literal),+)]
+        $(#[label_bytes($label_bytes:literal)])?
+        $field:ident: GaugeVec<$cap:literal>, $($rest:tt)*) => {
+        $crate::__embeprom_metrics_parse!(
+            [$($registration)*] [$($ns)?]
+            [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
+                gauge_vec<$cap $(, label_bytes: $label_bytes)?> $field[$($label),+] = $help;]
+            $($rest)*
+        );
+    };
+
+    // Scalar histograms.
+    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+        #[doc = $help:literal] $(#[doc = $more_docs:literal])*
+        #[buckets($($bucket:literal),+)]
+        $field:ident: IntHistogram, $($rest:tt)*) => {
+        $crate::__embeprom_metrics_parse!(
+            [$($registration)*] [$($ns)?]
+            [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
+                int_histogram $field[buckets: $($bucket),+] = $help;]
+            $($rest)*
+        );
+    };
+    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+        #[doc = $help:literal] $(#[doc = $more_docs:literal])*
+        #[buckets($($bucket:literal),+)]
+        $field:ident: Histogram, $($rest:tt)*) => {
+        $crate::__embeprom_metrics_parse!(
+            [$($registration)*] [$($ns)?]
+            [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
+                histogram $field[buckets: $($bucket),+] = $help;]
+            $($rest)*
+        );
+    };
+
+    // Histogram vectors.
+    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+        #[doc = $help:literal] $(#[doc = $more_docs:literal])*
+        #[labels($($label:literal),+)]
+        #[buckets($($bucket:literal),+)]
+        $(#[label_bytes($label_bytes:literal)])?
+        $field:ident: IntHistogramVec<$cap:literal>, $($rest:tt)*) => {
+        $crate::__embeprom_metrics_parse!(
+            [$($registration)*] [$($ns)?]
+            [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
+                int_histogram_vec<$cap $(, label_bytes: $label_bytes)?>
+                $field[$($label),+; buckets: $($bucket),+] = $help;]
+            $($rest)*
+        );
+    };
+    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+        #[doc = $help:literal] $(#[doc = $more_docs:literal])*
+        #[labels($($label:literal),+)]
+        #[buckets($($bucket:literal),+)]
+        $(#[label_bytes($label_bytes:literal)])?
+        $field:ident: HistogramVec<$cap:literal>, $($rest:tt)*) => {
+        $crate::__embeprom_metrics_parse!(
+            [$($registration)*] [$($ns)?]
+            [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
+                histogram_vec<$cap $(, label_bytes: $label_bytes)?>
+                $field[$($label),+; buckets: $($bucket),+] = $help;]
+            $($rest)*
+        );
+    };
+
+    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*] $($invalid:tt)+) => {
+        compile_error!(concat!(
+            "embeprom: invalid metrics! declaration near `",
+            stringify!($($invalid)+),
+            "`; expected `/// Help text` followed by `name: MetricType,`"
+        ));
     };
 }
 
@@ -156,7 +289,6 @@ macro_rules! __embeprom_metrics_generate {
         pub struct Metrics {
             $(
                 $(#[$fmeta])*
-                #[doc = $help]
                 pub $field: $crate::__embeprom_ty!(
                     @ty $kind $(, $cap $(, $label_bytes)?)? ; $($($extra)*)?),
             )+
@@ -212,7 +344,7 @@ macro_rules! __embeprom_metrics_generate {
                         return ::core::option::Option::Some($crate::MetricDesc {
                             namespace: NAMESPACE,
                             name: ::core::stringify!($field),
-                            help: $help,
+                            help: $help.strip_prefix(' ').unwrap_or($help),
                             metric: $crate::__embeprom_ref!(
                                 @ref $kind ; self.$field ; $($($extra)*)?),
                         });
@@ -444,13 +576,20 @@ mod tests {
         crate::metrics! {
             namespace = "wifi";
 
-            counter        packets_sent = "Total Wi-Fi frames transmitted.";
-            gauge          rssi_dbm = "Last measured RSSI in dBm.";
-            counter_vec<4> disconnects_total["reason"] = "Disconnects, by reason.";
-            int_histogram  tx_latency_us[buckets: 100, 500, 1000, 5000]
-                = "TX completion latency in microseconds.";
-            int_histogram_vec<4> peer_latency_us["peer"; buckets: 10, 50]
-                = "Per-peer latency.";
+            /// Total Wi-Fi frames transmitted.
+            packets_sent: Counter,
+            /// Last measured RSSI in dBm.
+            rssi_dbm: Gauge,
+            /// Disconnects, by reason.
+            #[labels("reason")]
+            disconnects_total: CounterVec<4>,
+            /// TX completion latency in microseconds.
+            #[buckets(100, 500, 1000, 5000)]
+            tx_latency_us: IntHistogram,
+            /// Per-peer latency.
+            #[labels("peer")]
+            #[buckets(10, 50)]
+            peer_latency_us: IntHistogramVec<4>,
         }
     }
 
@@ -458,7 +597,8 @@ mod tests {
         crate::metrics! {
             namespace = "accessor_test";
 
-            counter calls = "Accessor calls.";
+            /// Accessor calls.
+            calls: Counter,
         }
     }
 
@@ -502,6 +642,10 @@ mod tests {
         assert_eq!(group.len(), 5);
         assert_eq!(group.get(0).unwrap().name, "packets_sent");
         assert_eq!(group.get(0).unwrap().namespace, "wifi");
+        assert_eq!(
+            group.get(0).unwrap().help,
+            "Total Wi-Fi frames transmitted."
+        );
         assert_eq!(group.get(4).unwrap().name, "peer_latency_us");
         assert!(group.get(5).is_none());
     }
@@ -510,7 +654,8 @@ mod tests {
         crate::metrics! {
             namespace = "registration_test";
 
-            counter requests = "Total requests.";
+            /// Total requests.
+            requests: Counter,
         }
     }
 
@@ -540,7 +685,8 @@ mod tests {
 
     mod no_namespace_metrics {
         crate::metrics! {
-            counter requests = "Total requests.";
+            /// Total requests.
+            requests: Counter,
         }
     }
 
@@ -555,10 +701,18 @@ mod tests {
     #[cfg(feature = "float")]
     mod float_metrics {
         crate::metrics! {
-            gauge_f64 cpu_temp_c = "CPU temperature in Celsius.";
-            histogram request_latency_s[buckets: 0.01, 0.1, 1.0] = "Request latency.";
-            gauge_vec<4> queue_depth["queue"] = "Queue depth.";
-            histogram_vec<4> peer_rtt_s["peer"; buckets: 0.05, 0.5] = "Per-peer RTT.";
+            /// CPU temperature in Celsius.
+            cpu_temp_c: GaugeF64,
+            /// Request latency.
+            #[buckets(0.01, 0.1, 1.0)]
+            request_latency_s: Histogram,
+            /// Queue depth.
+            #[labels("queue")]
+            queue_depth: GaugeVec<4>,
+            /// Per-peer RTT.
+            #[labels("peer")]
+            #[buckets(0.05, 0.5)]
+            peer_rtt_s: HistogramVec<4>,
         }
     }
 
@@ -581,8 +735,9 @@ mod tests {
 
     mod literal_bucket_metrics {
         crate::metrics! {
-            int_histogram payload_bytes[buckets: 1_000u64, 0x7d0u64]
-                = "Payload size in bytes.";
+            /// Payload size in bytes.
+            #[buckets(1_000u64, 0x7d0u64)]
+            payload_bytes: IntHistogram,
         }
     }
 
@@ -607,9 +762,12 @@ mod tests {
         crate::metrics! {
             registry = super::NAMED_REGISTRY;
 
-            counter requests = "Total requests.";
-            counter_vec<2, label_bytes: 18> requests_by_reason["reason"]
-                = "Requests by reason.";
+            /// Total requests.
+            requests: Counter,
+            /// Requests by reason.
+            #[labels("reason")]
+            #[label_bytes(18)]
+            requests_by_reason: CounterVec<2>,
         }
     }
 
@@ -640,7 +798,8 @@ mod tests {
         crate::metrics! {
             registration = manual;
 
-            counter requests = "Total requests.";
+            /// Total requests.
+            requests: Counter,
         }
     }
 

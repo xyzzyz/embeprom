@@ -7,7 +7,8 @@ mod metrics {
     embeprom::metrics! {
         namespace = "installed";
 
-        counter requests = "Total requests.";
+        /// Total requests.
+        requests: Counter,
     }
 }
 

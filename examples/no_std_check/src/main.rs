@@ -8,11 +8,16 @@ mod metrics {
     embeprom::metrics! {
         namespace = "demo";
 
-        counter        packets_sent            = "Total packets transmitted.";
-        gauge          rssi_dbm                = "Last measured RSSI in dBm.";
-        counter_vec<4> disconnects_total["reason"] = "Disconnects, by reason.";
-        int_histogram  tx_latency_us[buckets: 100, 500, 1000, 5000]
-                                               = "TX completion latency in microseconds.";
+        /// Total packets transmitted.
+        packets_sent: Counter,
+        /// Last measured RSSI in dBm.
+        rssi_dbm: Gauge,
+        /// Disconnects, by reason.
+        #[labels("reason")]
+        disconnects_total: CounterVec<4>,
+        /// TX completion latency in microseconds.
+        #[buckets(100, 500, 1000, 5000)]
+        tx_latency_us: IntHistogram,
     }
 }
 
