@@ -39,9 +39,6 @@ pub fn write_escaped_help(out: &mut dyn Write, s: &str) -> fmt::Result {
 /// Whether `s` is a valid Prometheus metric name: `[a-zA-Z_:][a-zA-Z0-9_:]*`.
 /// An empty string (no namespace) is considered valid.
 pub const fn valid_metric_name(s: &str) -> bool {
-    // `Iterator::all` is not const on our Rust 1.87 MSRV. These validators
-    // run inside the `metrics!` macro's const assertions, so retain the
-    // const-compatible slice walk until iterator combinators can be used here.
     let Some((first, mut rest)) = s.as_bytes().split_first() else {
         return true;
     };
@@ -60,7 +57,6 @@ pub const fn valid_metric_name(s: &str) -> bool {
 /// Whether `s` is a valid Prometheus label name: `[a-zA-Z_][a-zA-Z0-9_]*`, and not
 /// prefixed with `__` (reserved for internal use).
 pub const fn valid_label_name(s: &str) -> bool {
-    // See `valid_metric_name` for why this uses a const-compatible slice walk.
     let bytes = s.as_bytes();
     let Some((first, mut rest)) = bytes.split_first() else {
         return false;

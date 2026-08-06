@@ -1,6 +1,6 @@
 //! Building and storing rendered, escaped label blocks for labeled metrics.
 
-use core::fmt::Write;
+use core::fmt::{self, Write};
 
 use crate::escape::write_escaped_label_value;
 
@@ -9,24 +9,34 @@ use crate::escape::write_escaped_label_value;
 /// metric. `V` is the byte budget for the whole block, not one value.
 pub type LabelBlock<const V: usize> = heapless::String<V>;
 
+/// The rendered label block exceeded its fixed byte capacity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelBlockTooLong;
+
+impl From<fmt::Error> for LabelBlockTooLong {
+    fn from(_: fmt::Error) -> Self {
+        Self
+    }
+}
+
 /// Render `names[i]="esc(values[i])"` pairs, comma-separated, into a
 /// [`LabelBlock`]. Escaping happens once here, not on every render.
 ///
-/// Returns `Err(())` if the rendered block would exceed `V` bytes.
+/// Returns [`LabelBlockTooLong`] if the rendered block would exceed `V` bytes.
 pub fn build_block<const K: usize, const V: usize>(
     names: &'static [&'static str; K],
     values: &[&str; K],
-) -> Result<LabelBlock<V>, ()> {
+) -> Result<LabelBlock<V>, LabelBlockTooLong> {
     let mut out = LabelBlock::<V>::new();
     for (i, (name, value)) in names.iter().zip(values.iter()).enumerate() {
         if i > 0 {
-            out.write_char(',').map_err(|_| ())?;
+            out.write_char(',')?;
         }
-        out.write_str(name).map_err(|_| ())?;
-        out.write_char('=').map_err(|_| ())?;
-        out.write_char('"').map_err(|_| ())?;
-        write_escaped_label_value(&mut out, value).map_err(|_| ())?;
-        out.write_char('"').map_err(|_| ())?;
+        out.write_str(name)?;
+        out.write_char('=')?;
+        out.write_char('"')?;
+        write_escaped_label_value(&mut out, value)?;
+        out.write_char('"')?;
     }
     Ok(out)
 }

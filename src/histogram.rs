@@ -98,11 +98,7 @@ impl<const B: usize> IntHistogram<B> {
 
     #[inline]
     fn observe_inner(&self, v: u64) {
-        let mut i = 0;
-        while i < B && v > self.bounds[i] {
-            i += 1;
-        }
-        if i < B {
+        if let Some(i) = self.bounds.iter().position(|bound| v <= *bound) {
             self.buckets[i].fetch_add(1, Ordering::Relaxed);
         }
         self.sum.fetch_add(v, Ordering::Relaxed);
@@ -154,8 +150,8 @@ impl<const B: usize> ErasedHistogram for IntHistogram<B> {
     ) -> Result<HistogramSnapshot<'a>, HistogramSnapshotError> {
         let buckets = snapshot_bucket_prefix(buckets, B)?;
         critical_section::with(|_cs| {
-            for (i, bucket) in buckets.iter_mut().enumerate() {
-                *bucket = self.buckets[i].load(Ordering::Relaxed);
+            for (snapshot_bucket, bucket) in buckets.iter_mut().zip(&self.buckets) {
+                *snapshot_bucket = bucket.load(Ordering::Relaxed);
             }
             Ok(HistogramSnapshot {
                 buckets,
@@ -213,11 +209,7 @@ impl<const B: usize> Histogram<B> {
         // NaN is not <= any finite bound. Match Prometheus client behavior by
         // counting it only in the implicit +Inf bucket (while the sum becomes
         // NaN), rather than accidentally assigning it to the first bucket.
-        let mut i = if v.is_nan() { B } else { 0 };
-        while i < B && v > self.bounds[i] {
-            i += 1;
-        }
-        if i < B {
+        if let Some(i) = self.bounds.iter().position(|bound| v <= *bound) {
             self.buckets[i].fetch_add(1, Ordering::Relaxed);
         }
         self.sum.fetch_add(v, Ordering::Relaxed);
@@ -269,8 +261,8 @@ impl<const B: usize> ErasedHistogram for Histogram<B> {
     ) -> Result<HistogramSnapshot<'a>, HistogramSnapshotError> {
         let buckets = snapshot_bucket_prefix(buckets, B)?;
         critical_section::with(|_cs| {
-            for (i, bucket) in buckets.iter_mut().enumerate() {
-                *bucket = self.buckets[i].load(Ordering::Relaxed);
+            for (snapshot_bucket, bucket) in buckets.iter_mut().zip(&self.buckets) {
+                *snapshot_bucket = bucket.load(Ordering::Relaxed);
             }
             Ok(HistogramSnapshot {
                 buckets,
