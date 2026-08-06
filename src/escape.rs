@@ -1,4 +1,12 @@
-//! Prometheus text-exposition-format escaping and name validation.
+//! Prometheus text-exposition-format escaping and legacy name validation.
+//!
+//! The escaping rules come from the official
+//! [Prometheus text exposition format][text-format]. The recommended legacy
+//! metric and label name character sets, and the reserved `__` label prefix,
+//! come from the [Prometheus data model][data-model].
+//!
+//! [text-format]: https://prometheus.io/docs/instrumenting/exposition_formats/#prometheus-text-format
+//! [data-model]: https://prometheus.io/docs/concepts/data_model/#metric-names-and-labels
 
 use core::fmt::{self, Write};
 
@@ -31,19 +39,17 @@ pub fn write_escaped_help(out: &mut dyn Write, s: &str) -> fmt::Result {
 /// Whether `s` is a valid Prometheus metric name: `[a-zA-Z_:][a-zA-Z0-9_:]*`.
 /// An empty string (no namespace) is considered valid.
 pub const fn valid_metric_name(s: &str) -> bool {
-    let b = s.as_bytes();
-    if b.is_empty() {
+    let Some((first, mut rest)) = s.as_bytes().split_first() else {
         return true;
-    }
-    if !is_name_start(b[0]) {
+    };
+    if !is_name_start(*first) {
         return false;
     }
-    let mut i = 1;
-    while i < b.len() {
-        if !is_name_continue(b[i]) {
+    while let Some((next, tail)) = rest.split_first() {
+        if !is_name_continue(*next) {
             return false;
         }
-        i += 1;
+        rest = tail;
     }
     true
 }
@@ -51,21 +57,20 @@ pub const fn valid_metric_name(s: &str) -> bool {
 /// Whether `s` is a valid Prometheus label name: `[a-zA-Z_][a-zA-Z0-9_]*`, and not
 /// prefixed with `__` (reserved for internal use).
 pub const fn valid_label_name(s: &str) -> bool {
-    let b = s.as_bytes();
-    if b.is_empty() {
+    let bytes = s.as_bytes();
+    let Some((first, mut rest)) = bytes.split_first() else {
+        return false;
+    };
+    if !is_label_start(*first) {
         return false;
     }
-    if !is_label_start(b[0]) {
-        return false;
-    }
-    let mut i = 1;
-    while i < b.len() {
-        if !is_label_continue(b[i]) {
+    while let Some((next, tail)) = rest.split_first() {
+        if !is_label_continue(*next) {
             return false;
         }
-        i += 1;
+        rest = tail;
     }
-    !(b.len() >= 2 && b[0] == b'_' && b[1] == b'_')
+    !matches!(bytes, [b'_', b'_', ..])
 }
 
 const fn is_name_start(c: u8) -> bool {

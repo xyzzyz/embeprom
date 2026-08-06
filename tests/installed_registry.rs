@@ -3,13 +3,12 @@ use embeprom::{InstallRegistryError, Registry, Renderer};
 static REGISTRY: Registry<2> = Registry::new();
 static TOO_LARGE: Registry<{ embeprom::MAX_GROUPS + 1 }> = Registry::new();
 
-embeprom::metrics! {
-    struct InstalledMetrics;
-    namespace = "installed";
-    static METRICS;
-    fn metrics;
+mod metrics {
+    embeprom::metrics! {
+        namespace = "installed";
 
-    counter requests = "Total requests.";
+        counter requests = "Total requests.";
+    }
 }
 
 #[test]
@@ -27,7 +26,7 @@ fn installed_registry_receives_cross_crate_lazy_registration() {
         Err(InstallRegistryError::AlreadyInUse)
     );
 
-    metrics().requests.inc();
+    metrics::get().requests.inc();
     assert_eq!(REGISTRY.len(), 1);
     assert_eq!(embeprom::group_count(), 1);
 

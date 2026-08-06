@@ -1,9 +1,10 @@
 //! The `metrics!` declaration macro and its internal dispatch helpers.
 //!
-//! `metrics!` expands to a real struct (one field per declared metric, so IDE
-//! autocomplete/find-usages work), a `const fn new()`, an `impl MetricGroup`
-//! for dynamic dispatch from the registry/renderer, a `static` holding the
-//! group, and an accessor function.
+//! `metrics!` expands to a real `Metrics` struct (one field per
+//! declared metric, so IDE autocomplete/find-usages work), a `const fn new()`,
+//! an `impl MetricGroup` for dynamic dispatch from the registry/renderer, a
+//! `METRICS` static holding the group, and a `get()` accessor function. Invoke
+//! it in a dedicated module so those fixed names have their own scope.
 //!
 //! Internally this is decomposed into per-position dispatch macros
 //! (`__embeprom_ty!` for the field's type, `__embeprom_init!` for its
@@ -14,43 +15,41 @@
 //! how to produce one kind of output for a given kind, not stitch together a
 //! whole item.
 
-/// Declare a metrics group: a struct with one field per metric, renderable
-/// via [`crate::Renderer`]. The generated accessor function self-registers
-/// the group with the global registry on first call (see
+/// Declare a module-scoped metrics group: a `Metrics` struct with one field
+/// per metric, renderable via [`crate::Renderer`]. The generated `get()`
+/// accessor self-registers the group with the global registry on first call (see
 /// [`crate::OnceRegister`]) — no separate registration step is needed, but
 /// [`crate::register`] remains available for eager registration.
 ///
 /// # Example
 ///
 /// ```
-/// embeprom::metrics! {
-///     /// Wi-Fi driver metrics.
-///     pub struct WifiMetrics;
-///     namespace = "wifi";
-///     static METRICS;
-///     fn metrics;
+/// pub mod metrics {
+///     embeprom::metrics! {
+///         namespace = "wifi";
 ///
-///     counter        packets_sent            = "Total Wi-Fi frames transmitted.";
-///     gauge          rssi_dbm                = "Last measured RSSI in dBm.";
-///     counter_vec<4> disconnects_total["reason"] = "Disconnects, by reason.";
-///     int_histogram  tx_latency_us[buckets: 100, 500, 1000, 5000]
-///                                            = "TX completion latency in microseconds.";
+///         counter        packets_sent            = "Total Wi-Fi frames transmitted.";
+///         gauge          rssi_dbm                = "Last measured RSSI in dBm.";
+///         counter_vec<4> disconnects_total["reason"] = "Disconnects, by reason.";
+///         int_histogram  tx_latency_us[buckets: 100, 500, 1000, 5000]
+///                                                = "TX completion latency in microseconds.";
+///     }
 /// }
 ///
-/// // Self-registers on this first call; no `embeprom::register(&METRICS)` needed.
-/// metrics().packets_sent.inc();
-/// metrics().disconnects_total.inc(&["beacon_timeout"]);
+/// // Self-registers on this first call; no explicit registration needed.
+/// metrics::get().packets_sent.inc();
+/// metrics::get().disconnects_total.inc(&["beacon_timeout"]);
 /// ```
 ///
 /// The help string is also used as the generated field's Rust documentation,
 /// so it appears alongside the concrete metric type and its methods in
-/// `cargo doc`. A group must declare at least one metric:
+/// `cargo doc`. Put documentation for the group as a whole on its enclosing
+/// module. Because the generated item names are fixed, invoke this macro at
+/// most once per module. A group must declare at least one metric:
 ///
 /// ```compile_fail
-/// embeprom::metrics! {
-///     struct EmptyMetrics;
-///     static METRICS;
-///     fn metrics;
+/// mod metrics {
+///     embeprom::metrics! {}
 /// }
 /// ```
 ///
@@ -65,19 +64,31 @@
 /// `counter_vec<4, label_bytes: 24>`.
 ///
 /// By default, the generated accessor lazily registers with the active global
-/// registry. Put `registry = PATH;` before the struct declaration to lazily
-/// register with a named [`crate::Registry`] instead, or put
-/// `registration = manual;` there to disable accessor-driven registration.
+/// registry. Put `registry = PATH;` before the optional namespace and metric
+/// declarations to lazily register with a named [`crate::Registry`] instead,
+/// or put `registration = manual;` there to disable accessor-driven
+/// registration.
 #[macro_export]
 macro_rules! metrics {
     (registry = $registry:path; $($rest:tt)*) => {
-        $crate::__embeprom_metrics_generate!([registry $registry] $($rest)*);
+        $crate::__embeprom_metrics_options!([registry $registry] $($rest)*);
     };
     (registration = manual; $($rest:tt)*) => {
-        $crate::__embeprom_metrics_generate!([manual] $($rest)*);
+        $crate::__embeprom_metrics_options!([manual] $($rest)*);
     };
     ($($rest:tt)*) => {
-        $crate::__embeprom_metrics_generate!([global] $($rest)*);
+        $crate::__embeprom_metrics_options!([global] $($rest)*);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __embeprom_metrics_options {
+    ([$($registration:tt)*] namespace = $ns:literal; $($rest:tt)*) => {
+        $crate::__embeprom_metrics_generate!([$($registration)*] [$ns] $($rest)*);
+    };
+    ([$($registration:tt)*] $($rest:tt)*) => {
+        $crate::__embeprom_metrics_generate!([$($registration)*] [] $($rest)*);
     };
 }
 
@@ -124,21 +135,13 @@ macro_rules! __embeprom_require_float {
 macro_rules! __embeprom_metrics_generate {
     (
         [$($registration:tt)*]
-        $(#[$smeta:meta])*
-        $svis:vis struct $Group:ident;
-        $(namespace = $ns:literal;)?
-        static $STATIC:ident;
-        fn $accessor:ident;
+        [$($ns:literal)?]
     ) => {
         compile_error!("embeprom: a metrics! group must declare at least one metric");
     };
     (
         [$($registration:tt)*]
-        $(#[$smeta:meta])*
-        $svis:vis struct $Group:ident;
-        $(namespace = $ns:literal;)?
-        static $STATIC:ident;
-        fn $accessor:ident;
+        [$($ns:literal)?]
         $(
             $(#[$fmeta:meta])*
             $kind:ident $(< $cap:literal $(, label_bytes: $label_bytes:literal)? >)? $field:ident
@@ -149,8 +152,8 @@ macro_rules! __embeprom_metrics_generate {
             $crate::__embeprom_require_kind_feature!($kind);
         )*
 
-        $(#[$smeta])*
-        $svis struct $Group {
+        /// The metrics declared in this module.
+        pub struct Metrics {
             $(
                 $(#[$fmeta])*
                 #[doc = $help]
@@ -159,7 +162,7 @@ macro_rules! __embeprom_metrics_generate {
             )+
         }
 
-        impl $Group {
+        impl Metrics {
             /// Create a new, empty metrics group.
             pub const fn new() -> Self {
                 Self {
@@ -171,7 +174,7 @@ macro_rules! __embeprom_metrics_generate {
             }
         }
 
-        impl ::core::default::Default for $Group {
+        impl ::core::default::Default for Metrics {
             fn default() -> Self {
                 Self::new()
             }
@@ -190,7 +193,7 @@ macro_rules! __embeprom_metrics_generate {
             )?
         };
 
-        impl $crate::MetricGroup for $Group {
+        impl $crate::MetricGroup for Metrics {
             fn group_name(&self) -> &'static str {
                 $crate::__embeprom_ns!($($ns)?)
             }
@@ -221,13 +224,13 @@ macro_rules! __embeprom_metrics_generate {
             }
         }
 
-        #[doc = concat!("The static `", stringify!($Group), "` metrics instance.")]
-        $svis static $STATIC: $Group = $Group::new();
+        /// The static metrics instance.
+        pub static METRICS: Metrics = Metrics::new();
 
-        #[doc = concat!("Return the static `", stringify!($Group), "` metrics instance.")]
-        $svis fn $accessor() -> &'static $Group {
-            $crate::__embeprom_register_mode!([$($registration)*] &$STATIC);
-            &$STATIC
+        /// Return the static metrics instance, registering it on first use.
+        pub fn get() -> &'static Metrics {
+            $crate::__embeprom_register_mode!([$($registration)*] &METRICS);
+            &METRICS
         }
     };
 }
@@ -436,34 +439,32 @@ macro_rules! __embeprom_ns {
 mod tests {
     use crate::MetricGroup;
 
-    crate::metrics! {
-        /// Wi-Fi driver metrics.
-        pub struct WifiMetrics;
-        namespace = "wifi";
-        static METRICS;
-        fn metrics;
+    /// Wi-Fi driver metrics.
+    mod wifi_metrics {
+        crate::metrics! {
+            namespace = "wifi";
 
-        counter        packets_sent = "Total Wi-Fi frames transmitted.";
-        gauge          rssi_dbm = "Last measured RSSI in dBm.";
-        counter_vec<4> disconnects_total["reason"] = "Disconnects, by reason.";
-        int_histogram  tx_latency_us[buckets: 100, 500, 1000, 5000]
-            = "TX completion latency in microseconds.";
-        int_histogram_vec<4> peer_latency_us["peer"; buckets: 10, 50]
-            = "Per-peer latency.";
+            counter        packets_sent = "Total Wi-Fi frames transmitted.";
+            gauge          rssi_dbm = "Last measured RSSI in dBm.";
+            counter_vec<4> disconnects_total["reason"] = "Disconnects, by reason.";
+            int_histogram  tx_latency_us[buckets: 100, 500, 1000, 5000]
+                = "TX completion latency in microseconds.";
+            int_histogram_vec<4> peer_latency_us["peer"; buckets: 10, 50]
+                = "Per-peer latency.";
+        }
     }
 
-    crate::metrics! {
-        struct AccessorMetrics;
-        namespace = "accessor_test";
-        static ACCESSOR_METRICS;
-        fn accessor_metrics;
+    mod accessor_metrics {
+        crate::metrics! {
+            namespace = "accessor_test";
 
-        counter calls = "Accessor calls.";
+            counter calls = "Accessor calls.";
+        }
     }
 
     #[test]
     fn generates_a_real_struct_with_named_fields() {
-        let m = WifiMetrics::new();
+        let m = wifi_metrics::Metrics::new();
         m.packets_sent.inc();
         m.rssi_dbm.set(-40);
         m.disconnects_total.inc(&["timeout"]);
@@ -478,24 +479,26 @@ mod tests {
 
     #[test]
     fn accessor_and_static_are_generated() {
-        accessor_metrics().calls.inc_by(3);
-        assert_eq!(accessor_metrics().calls.get(), 3);
-        assert_eq!(accessor_metrics().group_name(), "accessor_test");
+        accessor_metrics::get().calls.inc_by(3);
+        assert_eq!(accessor_metrics::get().calls.get(), 3);
+        assert_eq!(accessor_metrics::get().group_name(), "accessor_test");
         assert!(core::ptr::eq(
-            accessor_metrics(),
-            &raw const ACCESSOR_METRICS
+            accessor_metrics::get(),
+            &raw const accessor_metrics::METRICS
         ));
     }
 
     #[test]
     fn implements_metric_group_with_correct_arity_and_names() {
-        metrics().packets_sent.inc_by(5);
-        metrics().rssi_dbm.set(-67);
-        metrics().disconnects_total.inc(&["beacon_timeout"]);
-        metrics().tx_latency_us.observe(100);
-        metrics().peer_latency_us.observe(&["ap-1"], 10);
+        wifi_metrics::get().packets_sent.inc_by(5);
+        wifi_metrics::get().rssi_dbm.set(-67);
+        wifi_metrics::get()
+            .disconnects_total
+            .inc(&["beacon_timeout"]);
+        wifi_metrics::get().tx_latency_us.observe(100);
+        wifi_metrics::get().peer_latency_us.observe(&["ap-1"], 10);
 
-        let group: &dyn MetricGroup = metrics();
+        let group: &dyn MetricGroup = wifi_metrics::get();
         assert_eq!(group.len(), 5);
         assert_eq!(group.get(0).unwrap().name, "packets_sent");
         assert_eq!(group.get(0).unwrap().namespace, "wifi");
@@ -503,71 +506,66 @@ mod tests {
         assert!(group.get(5).is_none());
     }
 
-    crate::metrics! {
-        pub struct RegistrationMetrics;
-        namespace = "registration_test";
-        static REGISTRATION_METRICS;
-        fn registration_metrics;
+    mod registration_metrics {
+        crate::metrics! {
+            namespace = "registration_test";
 
-        counter requests = "Total requests.";
+            counter requests = "Total requests.";
+        }
     }
 
     #[test]
     fn accessor_self_registers_on_first_call() {
-        registration_metrics().requests.inc();
+        registration_metrics::get().requests.inc();
         assert_eq!(
             crate::snapshot()
                 .iter()
-                .filter(|g| core::ptr::addr_eq(**g, &raw const REGISTRATION_METRICS))
+                .filter(|g| { core::ptr::addr_eq(**g, &raw const registration_metrics::METRICS) })
                 .count(),
             1
         );
 
         // Further calls (and an explicit `register`, which dedups by static
         // identity) don't add a second entry.
-        registration_metrics().requests.inc();
-        crate::register(&REGISTRATION_METRICS);
+        registration_metrics::get().requests.inc();
+        crate::register(&registration_metrics::METRICS);
         assert_eq!(
             crate::snapshot()
                 .iter()
-                .filter(|g| core::ptr::addr_eq(**g, &raw const REGISTRATION_METRICS))
+                .filter(|g| { core::ptr::addr_eq(**g, &raw const registration_metrics::METRICS) })
                 .count(),
             1
         );
     }
 
-    crate::metrics! {
-        pub struct NoNamespaceMetrics;
-        static NO_NS_METRICS;
-        fn no_ns_metrics;
-
-        counter requests = "Total requests.";
+    mod no_namespace_metrics {
+        crate::metrics! {
+            counter requests = "Total requests.";
+        }
     }
 
     #[test]
     fn namespace_is_optional() {
-        assert_eq!(no_ns_metrics().group_name(), "");
-        let group: &dyn MetricGroup = no_ns_metrics();
+        assert_eq!(no_namespace_metrics::get().group_name(), "");
+        let group: &dyn MetricGroup = no_namespace_metrics::get();
         assert_eq!(group.get(0).unwrap().namespace, "");
         assert_eq!(group.get(0).unwrap().name, "requests");
     }
 
     #[cfg(feature = "float")]
-    crate::metrics! {
-        pub struct FloatMetrics;
-        static FLOAT_METRICS;
-        fn float_metrics;
-
-        gauge_f64 cpu_temp_c = "CPU temperature in Celsius.";
-        histogram request_latency_s[buckets: 0.01, 0.1, 1.0] = "Request latency.";
-        gauge_vec<4> queue_depth["queue"] = "Queue depth.";
-        histogram_vec<4> peer_rtt_s["peer"; buckets: 0.05, 0.5] = "Per-peer RTT.";
+    mod float_metrics {
+        crate::metrics! {
+            gauge_f64 cpu_temp_c = "CPU temperature in Celsius.";
+            histogram request_latency_s[buckets: 0.01, 0.1, 1.0] = "Request latency.";
+            gauge_vec<4> queue_depth["queue"] = "Queue depth.";
+            histogram_vec<4> peer_rtt_s["peer"; buckets: 0.05, 0.5] = "Per-peer RTT.";
+        }
     }
 
     #[cfg(feature = "float")]
     #[test]
     fn float_kinds_work() {
-        let m = float_metrics();
+        let m = float_metrics::get();
         m.cpu_temp_c.set(42.5);
         m.request_latency_s.observe(0.05);
         m.queue_depth.set(&["ingress"], 3);
@@ -581,19 +579,17 @@ mod tests {
         assert_eq!(group.len(), 4);
     }
 
-    crate::metrics! {
-        struct LiteralBucketMetrics;
-        static LITERAL_BUCKET_METRICS;
-        fn literal_bucket_metrics;
-
-        int_histogram payload_bytes[buckets: 1_000u64, 0x7d0u64]
-            = "Payload size in bytes.";
+    mod literal_bucket_metrics {
+        crate::metrics! {
+            int_histogram payload_bytes[buckets: 1_000u64, 0x7d0u64]
+                = "Payload size in bytes.";
+        }
     }
 
     #[test]
     fn histogram_bounds_render_values_instead_of_rust_literal_spelling() {
         let registry = crate::Registry::<1>::new();
-        registry.register(literal_bucket_metrics());
+        registry.register(literal_bucket_metrics::get());
         let mut out = heapless::String::<512>::new();
         crate::Renderer::<1>::from_registry(&registry)
             .render_to(&mut out)
@@ -607,31 +603,29 @@ mod tests {
 
     static NAMED_REGISTRY: crate::Registry<1> = crate::Registry::new();
 
-    crate::metrics! {
-        registry = NAMED_REGISTRY;
+    mod named_registry_metrics {
+        crate::metrics! {
+            registry = super::NAMED_REGISTRY;
 
-        struct NamedRegistryMetrics;
-        static NAMED_REGISTRY_METRICS;
-        fn named_registry_metrics;
-
-        counter requests = "Total requests.";
-        counter_vec<2, label_bytes: 18> requests_by_reason["reason"]
-            = "Requests by reason.";
+            counter requests = "Total requests.";
+            counter_vec<2, label_bytes: 18> requests_by_reason["reason"]
+                = "Requests by reason.";
+        }
     }
 
     #[test]
     fn accessor_can_lazily_register_with_a_named_registry() {
-        named_registry_metrics().requests.inc();
-        named_registry_metrics().requests.inc();
-        named_registry_metrics()
+        named_registry_metrics::get().requests.inc();
+        named_registry_metrics::get().requests.inc();
+        named_registry_metrics::get()
             .requests_by_reason
             .inc(&["auth_fail"]);
 
         assert_eq!(NAMED_REGISTRY.len(), 1);
-        assert_eq!(named_registry_metrics().requests.get(), 2);
-        let _: &crate::CounterVec<2, 1, 18> = &named_registry_metrics().requests_by_reason;
+        assert_eq!(named_registry_metrics::get().requests.get(), 2);
+        let _: &crate::CounterVec<2, 1, 18> = &named_registry_metrics::get().requests_by_reason;
         assert_eq!(
-            named_registry_metrics()
+            named_registry_metrics::get()
                 .requests_by_reason
                 .with(&["auth_fail"])
                 .get(),
@@ -642,26 +636,24 @@ mod tests {
     static MANUAL_REGISTRY_A: crate::Registry<1> = crate::Registry::new();
     static MANUAL_REGISTRY_B: crate::Registry<1> = crate::Registry::new();
 
-    crate::metrics! {
-        registration = manual;
+    mod manual_metrics {
+        crate::metrics! {
+            registration = manual;
 
-        struct ManualMetrics;
-        static MANUAL_METRICS;
-        fn manual_metrics;
-
-        counter requests = "Total requests.";
+            counter requests = "Total requests.";
+        }
     }
 
     #[test]
     fn manual_group_can_be_registered_with_multiple_registries() {
-        manual_metrics().requests.inc();
+        manual_metrics::get().requests.inc();
         assert!(MANUAL_REGISTRY_A.is_empty());
         assert!(MANUAL_REGISTRY_B.is_empty());
 
-        MANUAL_REGISTRY_A.register(&MANUAL_METRICS);
-        MANUAL_REGISTRY_B.register(&MANUAL_METRICS);
+        MANUAL_REGISTRY_A.register(&manual_metrics::METRICS);
+        MANUAL_REGISTRY_B.register(&manual_metrics::METRICS);
         assert_eq!(MANUAL_REGISTRY_A.len(), 1);
         assert_eq!(MANUAL_REGISTRY_B.len(), 1);
-        assert_eq!(manual_metrics().requests.get(), 1);
+        assert_eq!(manual_metrics::get().requests.get(), 1);
     }
 }

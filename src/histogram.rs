@@ -3,6 +3,8 @@
 use portable_atomic::{AtomicU64, Ordering};
 
 use crate::erased::ErasedHistogram;
+#[cfg(feature = "consistent-histograms")]
+use crate::erased::{HistogramSnapshot, HistogramSnapshotError, snapshot_bucket_prefix};
 use crate::value::Value;
 
 pub(crate) const fn validate_u64_bounds<const B: usize>(bounds: &[u64]) {
@@ -146,16 +148,20 @@ impl<const B: usize> ErasedHistogram for IntHistogram<B> {
         Value::U64(IntHistogram::sum(self))
     }
     #[cfg(feature = "consistent-histograms")]
-    fn snapshot(&self, buckets: &mut [u64]) -> (Value, u64) {
-        debug_assert!(buckets.len() >= B);
+    fn snapshot<'a>(
+        &self,
+        buckets: &'a mut [u64],
+    ) -> Result<HistogramSnapshot<'a>, HistogramSnapshotError> {
+        let buckets = snapshot_bucket_prefix(buckets, B)?;
         critical_section::with(|_cs| {
-            for (i, bucket) in buckets[..B].iter_mut().enumerate() {
+            for (i, bucket) in buckets.iter_mut().enumerate() {
                 *bucket = self.buckets[i].load(Ordering::Relaxed);
             }
-            (
-                Value::U64(self.sum.load(Ordering::Relaxed)),
-                self.count.load(Ordering::Relaxed),
-            )
+            Ok(HistogramSnapshot {
+                buckets,
+                sum: Value::U64(self.sum.load(Ordering::Relaxed)),
+                count: self.count.load(Ordering::Relaxed),
+            })
         })
     }
 }
@@ -257,16 +263,20 @@ impl<const B: usize> ErasedHistogram for Histogram<B> {
         Value::F64(Histogram::sum(self))
     }
     #[cfg(feature = "consistent-histograms")]
-    fn snapshot(&self, buckets: &mut [u64]) -> (Value, u64) {
-        debug_assert!(buckets.len() >= B);
+    fn snapshot<'a>(
+        &self,
+        buckets: &'a mut [u64],
+    ) -> Result<HistogramSnapshot<'a>, HistogramSnapshotError> {
+        let buckets = snapshot_bucket_prefix(buckets, B)?;
         critical_section::with(|_cs| {
-            for (i, bucket) in buckets[..B].iter_mut().enumerate() {
+            for (i, bucket) in buckets.iter_mut().enumerate() {
                 *bucket = self.buckets[i].load(Ordering::Relaxed);
             }
-            (
-                Value::F64(self.sum.load(Ordering::Relaxed)),
-                self.count.load(Ordering::Relaxed),
-            )
+            Ok(HistogramSnapshot {
+                buckets,
+                sum: Value::F64(self.sum.load(Ordering::Relaxed)),
+                count: self.count.load(Ordering::Relaxed),
+            })
         })
     }
 }
@@ -287,6 +297,30 @@ mod tests {
         assert_eq!(h.bucket(3), 2); // (1000, 5000]
         assert_eq!(h.count(), 7); // includes the 10_000 +Inf observation
         assert_eq!(h.sum(), 12 + 480 + 480 + 999 + 4999 + 4999 + 10_000);
+    }
+
+    #[cfg(feature = "consistent-histograms")]
+    #[test]
+    fn coherent_snapshot_names_values_and_reports_a_short_buffer() {
+        let h: IntHistogram<2> = IntHistogram::new(&[100, 500]);
+        h.observe(50);
+        h.observe(250);
+        h.observe(1_000);
+
+        let error = ErasedHistogram::snapshot(&h, &mut [0; 1]).unwrap_err();
+        assert_eq!(
+            error,
+            HistogramSnapshotError {
+                required: 2,
+                capacity: 1,
+            }
+        );
+
+        let mut buckets = [0; 3];
+        let snapshot = ErasedHistogram::snapshot(&h, &mut buckets).unwrap();
+        assert_eq!(snapshot.buckets, &[1, 1]);
+        assert_eq!(snapshot.sum, Value::U64(1_300));
+        assert_eq!(snapshot.count, 3);
     }
 
     #[test]

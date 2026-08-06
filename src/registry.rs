@@ -224,13 +224,12 @@ pub fn install_registry<const N: usize>(
 /// Call this once per crate/library at startup, e.g.:
 ///
 /// ```
-/// # embeprom::metrics! {
-/// #     struct Metrics;
-/// #     static METRICS;
-/// #     fn metrics;
-/// #     counter requests = "Total requests.";
+/// # mod metrics {
+/// #     embeprom::metrics! {
+/// #         counter requests = "Total requests.";
+/// #     }
 /// # }
-/// embeprom::register(&METRICS);
+/// embeprom::register(&metrics::METRICS);
 /// ```
 ///
 /// Metrics groups declared with [`crate::metrics!`] self-register on first

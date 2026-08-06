@@ -6,6 +6,43 @@ use core::fmt;
 use crate::counter::Counter;
 use crate::value::Value;
 
+/// A coherent histogram reading backed by the initialized prefix of the
+/// caller-provided bucket buffer.
+#[cfg(feature = "consistent-histograms")]
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HistogramSnapshot<'a> {
+    /// Non-cumulative counts for the finite buckets, in bound order.
+    pub buckets: &'a [u64],
+    /// Sum of every observation represented by this snapshot.
+    pub sum: Value,
+    /// Total observation count, also used for the implicit `+Inf` bucket.
+    pub count: u64,
+}
+
+/// The caller-provided histogram snapshot buffer was too small.
+#[cfg(feature = "consistent-histograms")]
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HistogramSnapshotError {
+    /// Number of finite bucket slots required.
+    pub required: usize,
+    /// Number of bucket slots provided.
+    pub capacity: usize,
+}
+
+#[cfg(feature = "consistent-histograms")]
+pub(crate) fn snapshot_bucket_prefix(
+    buckets: &mut [u64],
+    required: usize,
+) -> Result<&mut [u64], HistogramSnapshotError> {
+    let capacity = buckets.len();
+    if capacity < required {
+        return Err(HistogramSnapshotError { required, capacity });
+    }
+    Ok(&mut buckets[..required])
+}
+
 /// Object-safe view over a labeled counter collection ([`crate::vec::CounterVec`]).
 #[doc(hidden)]
 pub trait ErasedCounterVec: Sync {
@@ -32,7 +69,8 @@ pub trait ErasedGaugeVec: Sync {
 /// ([`crate::histogram::IntHistogram`] or [`crate::histogram::Histogram`]).
 #[doc(hidden)]
 pub trait ErasedHistogram: Sync {
-    /// Number of finite buckets (excludes the implicit `+Inf` bucket).
+    /// Number of finite buckets. The mandatory implicit `+Inf` bucket is not
+    /// stored separately because its value is exactly [`Self::total_count`].
     fn bucket_count(&self) -> usize;
     /// The upper bound of finite bucket `b`. Bounds must be strictly
     /// increasing; floating-point bounds must also be finite.
@@ -43,20 +81,29 @@ pub trait ErasedHistogram: Sync {
     fn total_count(&self) -> u64;
     /// Sum of all observed values.
     fn sum(&self) -> Value;
-    /// Copy one coherent bucket/sum/count snapshot into `buckets`.
+    /// Copy one coherent finite-bucket/sum/count snapshot into `buckets`.
     ///
-    /// The renderer passes at least [`Self::bucket_count`] entries and uses
-    /// only that prefix. Implementations must prevent an observation from
-    /// interleaving with the copy.
+    /// The returned [`HistogramSnapshot::buckets`] slice identifies exactly
+    /// the initialized prefix. Implementations must prevent an observation
+    /// from interleaving with the copy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistogramSnapshotError`] if `buckets` has fewer than
+    /// [`Self::bucket_count`] entries.
     #[cfg(feature = "consistent-histograms")]
-    fn snapshot(&self, buckets: &mut [u64]) -> (Value, u64);
+    fn snapshot<'a>(
+        &self,
+        buckets: &'a mut [u64],
+    ) -> Result<HistogramSnapshot<'a>, HistogramSnapshotError>;
 }
 
 /// Object-safe view over a labeled histogram collection
 /// ([`crate::vec::IntHistogramVec`] or [`crate::vec::HistogramVec`]).
 #[doc(hidden)]
 pub trait ErasedHistogramVec: Sync {
-    /// Number of finite buckets (excludes the implicit `+Inf` bucket).
+    /// Number of finite buckets. The mandatory implicit `+Inf` bucket is not
+    /// stored separately because its value is exactly [`Self::total_count`].
     fn bucket_count(&self) -> usize;
     /// The upper bound of finite bucket `b`, shared by every series. Bounds
     /// must be strictly increasing; floating-point bounds must also be finite.
@@ -73,15 +120,27 @@ pub trait ErasedHistogramVec: Sync {
     fn sum(&self, s: usize) -> Value;
     /// Copy one coherent bucket/sum/count snapshot for series `s` into
     /// `buckets`. See [`ErasedHistogram::snapshot`] for the contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HistogramSnapshotError`] if `buckets` has fewer than
+    /// [`Self::bucket_count`] entries.
     #[cfg(feature = "consistent-histograms")]
-    fn snapshot(&self, s: usize, buckets: &mut [u64]) -> (Value, u64);
+    fn snapshot<'a>(
+        &self,
+        s: usize,
+        buckets: &'a mut [u64],
+    ) -> Result<HistogramSnapshot<'a>, HistogramSnapshotError>;
 }
 
 /// A type-erased reference to one metric's data.
 #[doc(hidden)]
 pub enum MetricRef<'a> {
+    /// Counters have one concrete representation, so retaining a reference
+    /// avoids loading their atomic value while rendering HELP and TYPE lines.
     Counter(&'a Counter),
-    /// Gauges are read eagerly since they're cheap scalars; no `dyn` needed.
+    /// Gauges have integer and floating-point representations, so normalize
+    /// their current value eagerly instead of adding an erased gauge trait.
     Gauge(Value),
     Histogram {
         h: &'a dyn ErasedHistogram,
@@ -128,50 +187,23 @@ pub trait MetricGroup: core::any::Any + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gauge::Gauge;
 
-    struct FixtureGroup {
-        requests: Counter,
-        temperature: Gauge,
-    }
+    mod fixture {
+        crate::metrics! {
+            namespace = "fixture";
 
-    impl MetricGroup for FixtureGroup {
-        fn group_name(&self) -> &'static str {
-            "fixture"
-        }
-
-        fn len(&self) -> usize {
-            2
-        }
-
-        fn get(&self, index: usize) -> Option<MetricDesc<'_>> {
-            match index {
-                0 => Some(MetricDesc {
-                    namespace: "fixture",
-                    name: "requests",
-                    help: "Total requests.",
-                    metric: MetricRef::Counter(&self.requests),
-                }),
-                1 => Some(MetricDesc {
-                    namespace: "fixture",
-                    name: "temperature",
-                    help: "Current temperature.",
-                    metric: MetricRef::Gauge(Value::I64(self.temperature.get())),
-                }),
-                _ => None,
-            }
+            counter requests = "Total requests.";
+            gauge temperature = "Current temperature.";
         }
     }
 
     #[test]
     fn dynamic_dispatch_over_metric_group() {
-        let g = FixtureGroup {
-            requests: Counter::new(),
-            temperature: Gauge::new(21),
-        };
+        let g = fixture::get();
+        g.temperature.set(21);
         g.requests.inc_by(3);
 
-        let group: &dyn MetricGroup = &g;
+        let group: &dyn MetricGroup = g;
         assert_eq!(group.len(), 2);
         assert!(!group.is_empty());
 

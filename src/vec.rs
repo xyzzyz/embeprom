@@ -18,6 +18,8 @@ use portable_atomic::{AtomicU64, Ordering};
 use crate::config::LABEL_VALUE_LEN;
 use crate::counter::Counter;
 use crate::erased::{ErasedCounterVec, ErasedGaugeVec, ErasedHistogramVec};
+#[cfg(feature = "consistent-histograms")]
+use crate::erased::{HistogramSnapshot, HistogramSnapshotError, snapshot_bucket_prefix};
 use crate::escape::valid_label_name;
 use crate::gauge::Gauge;
 #[cfg(feature = "float")]
@@ -505,16 +507,21 @@ impl<const N: usize, const B: usize, const K: usize, const V: usize> ErasedHisto
         Value::U64(self.sums[s].load(Ordering::Relaxed))
     }
     #[cfg(feature = "consistent-histograms")]
-    fn snapshot(&self, s: usize, buckets: &mut [u64]) -> (Value, u64) {
-        debug_assert!(buckets.len() >= B);
+    fn snapshot<'a>(
+        &self,
+        s: usize,
+        buckets: &'a mut [u64],
+    ) -> Result<HistogramSnapshot<'a>, HistogramSnapshotError> {
+        let buckets = snapshot_bucket_prefix(buckets, B)?;
         critical_section::with(|_cs| {
-            for (i, bucket) in buckets[..B].iter_mut().enumerate() {
+            for (i, bucket) in buckets.iter_mut().enumerate() {
                 *bucket = self.buckets[s][i].load(Ordering::Relaxed);
             }
-            (
-                Value::U64(self.sums[s].load(Ordering::Relaxed)),
-                self.counts[s].load(Ordering::Relaxed),
-            )
+            Ok(HistogramSnapshot {
+                buckets,
+                sum: Value::U64(self.sums[s].load(Ordering::Relaxed)),
+                count: self.counts[s].load(Ordering::Relaxed),
+            })
         })
     }
 }
@@ -681,16 +688,21 @@ impl<const N: usize, const B: usize, const K: usize, const V: usize> ErasedHisto
         Value::F64(self.sums[s].load(Ordering::Relaxed))
     }
     #[cfg(feature = "consistent-histograms")]
-    fn snapshot(&self, s: usize, buckets: &mut [u64]) -> (Value, u64) {
-        debug_assert!(buckets.len() >= B);
+    fn snapshot<'a>(
+        &self,
+        s: usize,
+        buckets: &'a mut [u64],
+    ) -> Result<HistogramSnapshot<'a>, HistogramSnapshotError> {
+        let buckets = snapshot_bucket_prefix(buckets, B)?;
         critical_section::with(|_cs| {
-            for (i, bucket) in buckets[..B].iter_mut().enumerate() {
+            for (i, bucket) in buckets.iter_mut().enumerate() {
                 *bucket = self.buckets[s][i].load(Ordering::Relaxed);
             }
-            (
-                Value::F64(self.sums[s].load(Ordering::Relaxed)),
-                self.counts[s].load(Ordering::Relaxed),
-            )
+            Ok(HistogramSnapshot {
+                buckets,
+                sum: Value::F64(self.sums[s].load(Ordering::Relaxed)),
+                count: self.counts[s].load(Ordering::Relaxed),
+            })
         })
     }
 }

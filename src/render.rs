@@ -7,6 +7,8 @@
 
 use core::fmt::{self, Write};
 
+#[cfg(feature = "consistent-histograms")]
+use crate::erased::HistogramSnapshotError;
 use crate::erased::{ErasedHistogram, ErasedHistogramVec, MetricDesc, MetricRef};
 use crate::escape::write_escaped_help;
 use crate::registry::{GroupSnapshot, Registry};
@@ -130,7 +132,7 @@ impl<const N: usize> Write for LineBuffer<N> {
 
 /// Scratch state for one scalar histogram or one histogram-vector series.
 /// It is zero-sized unless coherent histogram snapshots are enabled.
-struct HistogramSnapshot<const N: usize> {
+struct HistogramScratch<const N: usize> {
     #[cfg(feature = "consistent-histograms")]
     buckets: [u64; N],
     #[cfg(feature = "consistent-histograms")]
@@ -139,7 +141,7 @@ struct HistogramSnapshot<const N: usize> {
     count: u64,
 }
 
-impl<const N: usize> HistogramSnapshot<N> {
+impl<const N: usize> HistogramScratch<N> {
     const fn new() -> Self {
         Self {
             #[cfg(feature = "consistent-histograms")]
@@ -152,32 +154,45 @@ impl<const N: usize> HistogramSnapshot<N> {
     }
 
     #[cfg(feature = "consistent-histograms")]
-    fn capture_scalar(&mut self, histogram: &dyn ErasedHistogram) {
-        let (sum, count) = histogram.snapshot(&mut self.buckets);
-        self.sum = sum;
-        self.count = count;
+    fn capture_scalar(
+        &mut self,
+        histogram: &dyn ErasedHistogram,
+    ) -> Result<(), HistogramSnapshotError> {
+        let snapshot = histogram.snapshot(&mut self.buckets)?;
+        debug_assert_eq!(snapshot.buckets.len(), histogram.bucket_count());
+        self.sum = snapshot.sum;
+        self.count = snapshot.count;
+        Ok(())
     }
 
     #[cfg(feature = "consistent-histograms")]
-    fn capture_vec(&mut self, histogram: &dyn ErasedHistogramVec, series: usize) {
-        let (sum, count) = histogram.snapshot(series, &mut self.buckets);
-        self.sum = sum;
-        self.count = count;
+    fn capture_vec(
+        &mut self,
+        histogram: &dyn ErasedHistogramVec,
+        series: usize,
+    ) -> Result<(), HistogramSnapshotError> {
+        let snapshot = histogram.snapshot(series, &mut self.buckets)?;
+        debug_assert_eq!(snapshot.buckets.len(), histogram.bucket_count());
+        self.sum = snapshot.sum;
+        self.count = snapshot.count;
+        Ok(())
     }
 
     #[cfg(feature = "consistent-histograms")]
-    fn capture(&mut self, metric: &MetricRef, series: Option<usize>) {
+    fn capture(
+        &mut self,
+        metric: &MetricRef,
+        series: Option<usize>,
+    ) -> Result<(), HistogramSnapshotError> {
         match metric {
             MetricRef::Histogram { h } => {
                 debug_assert!(series.is_none());
-                self.capture_scalar(*h);
+                self.capture_scalar(*h)
             }
-            MetricRef::HistogramVec { h } => {
-                self.capture_vec(
-                    *h,
-                    series.expect("embeprom: histogram-vector snapshot requires a series"),
-                );
-            }
+            MetricRef::HistogramVec { h } => self.capture_vec(
+                *h,
+                series.expect("embeprom: histogram-vector snapshot requires a series"),
+            ),
             _ => unreachable!("embeprom: histogram snapshot requested for non-histogram metric"),
         }
     }
@@ -389,7 +404,7 @@ fn next_step(step: Step, desc: &MetricDesc) -> Step {
 fn render_bucket<const H: usize>(
     line: &mut dyn Write,
     desc: &MetricDesc,
-    snapshot: &HistogramSnapshot<H>,
+    snapshot: &HistogramScratch<H>,
     histogram_cumulative: &mut u64,
     series: Option<usize>,
     bucket: usize,
@@ -424,7 +439,7 @@ fn render_bucket<const H: usize>(
 fn render_infinite_bucket<const H: usize>(
     line: &mut dyn Write,
     desc: &MetricDesc,
-    snapshot: &HistogramSnapshot<H>,
+    snapshot: &HistogramScratch<H>,
     series: Option<usize>,
 ) -> fmt::Result {
     write_full_name(line, desc, "_bucket")?;
@@ -451,7 +466,7 @@ fn render_infinite_bucket<const H: usize>(
 fn render_histogram_sum<const H: usize>(
     line: &mut dyn Write,
     desc: &MetricDesc,
-    snapshot: &HistogramSnapshot<H>,
+    snapshot: &HistogramScratch<H>,
     series: Option<usize>,
 ) -> fmt::Result {
     write_full_name(line, desc, "_sum")?;
@@ -477,7 +492,7 @@ fn render_histogram_sum<const H: usize>(
 fn render_histogram_count<const H: usize>(
     line: &mut dyn Write,
     desc: &MetricDesc,
-    snapshot: &HistogramSnapshot<H>,
+    snapshot: &HistogramScratch<H>,
     series: Option<usize>,
 ) -> fmt::Result {
     write_full_name(line, desc, "_count")?;
@@ -506,7 +521,7 @@ fn render_step<const H: usize>(
     line: &mut dyn Write,
     step: Step,
     desc: &MetricDesc,
-    snapshot: &HistogramSnapshot<H>,
+    snapshot: &HistogramScratch<H>,
     histogram_cumulative: &mut u64,
 ) -> fmt::Result {
     match step {
@@ -579,7 +594,7 @@ pub struct Renderer<
     m: usize,
     step: Step,
     line: LineBuffer<L>,
-    histogram: HistogramSnapshot<H>,
+    histogram: HistogramScratch<H>,
     histogram_cumulative: u64,
     failed: Option<RenderError>,
 }
@@ -592,7 +607,7 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
             m: 0,
             step: Step::Help,
             line: LineBuffer::new(),
-            histogram: HistogramSnapshot::new(),
+            histogram: HistogramScratch::new(),
             histogram_cumulative: 0,
             failed: None,
         }
@@ -700,12 +715,22 @@ impl<const N: usize, const L: usize, const H: usize> Renderer<N, L, H> {
                     return Err(error);
                 }
 
-                match cur_step {
+                let capture = match cur_step {
                     Step::Bucket { s, b: 0 } => self.histogram.capture(&desc.metric, s),
                     Step::BucketInf { s } if bucket_count == Some(0) => {
-                        self.histogram.capture(&desc.metric, s);
+                        self.histogram.capture(&desc.metric, s)
                     }
-                    _ => {}
+                    _ => Ok(()),
+                };
+                if let Err(buffer) = capture {
+                    let error = RenderError::HistogramCapacityExceeded {
+                        required: buffer.required,
+                        capacity: buffer.capacity,
+                        namespace: desc.namespace,
+                        metric: desc.name,
+                    };
+                    self.failed = Some(error);
+                    return Err(error);
                 }
             }
 
@@ -860,15 +885,13 @@ mod tests {
 
     static RENDERED_LEN_REGISTRY: Registry<1> = Registry::new();
 
-    crate::metrics! {
-        registry = RENDERED_LEN_REGISTRY;
+    mod rendered_len_metrics {
+        crate::metrics! {
+            registry = super::RENDERED_LEN_REGISTRY;
+            namespace = "rendered_len_test";
 
-        struct RenderedLenMetrics;
-        namespace = "rendered_len_test";
-        static RENDERED_LEN_METRICS;
-        fn rendered_len_metrics;
-
-        counter requests = "Total test requests.";
+            counter requests = "Total test requests.";
+        }
     }
 
     struct FixtureCounterVec {
@@ -919,9 +942,18 @@ mod tests {
             Value::U64(self.total_sum)
         }
         #[cfg(feature = "consistent-histograms")]
-        fn snapshot(&self, _s: usize, buckets: &mut [u64]) -> (Value, u64) {
-            buckets[..self.buckets.len()].copy_from_slice(&self.buckets);
-            (Value::U64(self.total_sum), self.total_count)
+        fn snapshot<'a>(
+            &self,
+            _s: usize,
+            buckets: &'a mut [u64],
+        ) -> Result<crate::HistogramSnapshot<'a>, crate::HistogramSnapshotError> {
+            let buckets = crate::erased::snapshot_bucket_prefix(buckets, self.buckets.len())?;
+            buckets.copy_from_slice(&self.buckets);
+            Ok(crate::HistogramSnapshot {
+                buckets,
+                sum: Value::U64(self.total_sum),
+                count: self.total_count,
+            })
         }
     }
 
@@ -1182,11 +1214,19 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
         }
 
         #[cfg(feature = "consistent-histograms")]
-        fn snapshot(&self, buckets: &mut [u64]) -> (Value, u64) {
-            for (b, bucket) in buckets[..3].iter_mut().enumerate() {
+        fn snapshot<'a>(
+            &self,
+            buckets: &'a mut [u64],
+        ) -> Result<crate::HistogramSnapshot<'a>, crate::HistogramSnapshotError> {
+            let buckets = crate::erased::snapshot_bucket_prefix(buckets, 3)?;
+            for (b, bucket) in buckets.iter_mut().enumerate() {
                 *bucket = self.bucket(b);
             }
-            (Value::U64(0), 6)
+            Ok(crate::HistogramSnapshot {
+                buckets,
+                sum: Value::U64(0),
+                count: 6,
+            })
         }
     }
 
@@ -1536,7 +1576,7 @@ wifi_peer_latency_us_count{peer=\"ap-1\"} 6
 
     #[test]
     fn rendered_len_matches_render_for_an_isolated_registry() {
-        rendered_len_metrics().requests.inc_by(9_999);
+        rendered_len_metrics::get().requests.inc_by(9_999);
 
         let mut out = heapless::String::<256>::new();
         Renderer::<1>::from_registry(&RENDERED_LEN_REGISTRY)
