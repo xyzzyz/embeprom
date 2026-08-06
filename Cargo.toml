@@ -1,0 +1,59 @@
+[package]
+name = "embeprom"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+description = "Prometheus-style metrics for no_std embedded devices"
+readme = "README.md"
+categories = ["embedded", "no-std"]
+keywords = ["prometheus", "metrics", "embedded", "no-std"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/xyzzyz/embeprom"
+exclude = ["examples/"]
+
+[dependencies]
+heapless = { version = "0.9", default-features = false }
+critical-section = "1.2"
+portable-atomic = { version = "1.11", default-features = false, features = ["fallback"] }
+log = { version = "0.4", default-features = false, optional = true }
+
+[dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }
+
+[features]
+default = ["float"]
+
+# f64 gauges/histograms (GaugeF64, Histogram). Pulls in AtomicF64 and f64 Display.
+float = ["portable-atomic/float"]
+
+# Targets without native CAS / 64-bit atomics (e.g. thumbv6m-none-eabi).
+cs-atomics = ["portable-atomic/critical-section"]
+
+# Serialize histogram observations and take coherent renderer snapshots.
+consistent-histograms = []
+
+# Log (via the `log` crate) when a metric group fails to self-register
+# because the global registry is full. See `OnceRegister`.
+log = ["dep:log"]
+
+# Host-side testing / std sinks.
+std = ["critical-section/std"]
+
+# Increase the rendered label-block byte budget above its 48-byte default.
+# If several are enabled through feature unification, the largest wins.
+label-value-64 = []
+label-value-128 = []
+
+# Increase the maximum number of registered metric groups above its default
+# of 16. If several are enabled through feature unification, the largest wins.
+max-groups-32 = []
+max-groups-64 = []
+max-groups-128 = []
+max-groups-256 = []
+max-groups-512 = []
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+must_use_candidate = "allow"

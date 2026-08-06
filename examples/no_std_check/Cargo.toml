@@ -1,0 +1,15 @@
+[package]
+name = "no_std_check"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+embeprom = { path = "../..", features = ["cs-atomics"] }
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+panic-halt = "1.0"
+
+[profile.dev]
+panic = "abort"
+[profile.release]
+panic = "abort"
