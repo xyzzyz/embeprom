@@ -198,7 +198,6 @@ pub use erased::{
     MetricRef,
 };
 #[cfg(feature = "consistent-histograms")]
-#[doc(hidden)]
 pub use erased::{HistogramSnapshot, HistogramSnapshotError};
 pub use escape::{valid_label_name, valid_metric_name};
 pub use gauge::Gauge;

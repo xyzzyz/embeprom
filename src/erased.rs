@@ -9,7 +9,6 @@ use crate::value::Value;
 /// A coherent histogram reading backed by the initialized prefix of the
 /// caller-provided bucket buffer.
 #[cfg(feature = "consistent-histograms")]
-#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HistogramSnapshot<'a> {
     /// Non-cumulative counts for the finite buckets, in bound order.
@@ -22,7 +21,6 @@ pub struct HistogramSnapshot<'a> {
 
 /// The caller-provided histogram snapshot buffer was too small.
 #[cfg(feature = "consistent-histograms")]
-#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HistogramSnapshotError {
     /// Number of finite bucket slots required.
@@ -37,10 +35,9 @@ pub(crate) fn snapshot_bucket_prefix(
     required: usize,
 ) -> Result<&mut [u64], HistogramSnapshotError> {
     let capacity = buckets.len();
-    if capacity < required {
-        return Err(HistogramSnapshotError { required, capacity });
-    }
-    Ok(&mut buckets[..required])
+    buckets
+        .get_mut(..required)
+        .ok_or(HistogramSnapshotError { required, capacity })
 }
 
 /// Object-safe view over a labeled counter collection ([`crate::vec::CounterVec`]).
