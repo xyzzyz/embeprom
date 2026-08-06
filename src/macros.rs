@@ -6,14 +6,19 @@
 //! `METRICS` static holding the group, and a `get()` accessor function. Invoke
 //! it in a dedicated module so those fixed names have their own scope.
 //!
-//! Internally this is decomposed into per-position dispatch macros
-//! (`__embeprom_ty!` for the field's type, `__embeprom_init!` for its
-//! initializer, `__embeprom_ref!` for the `MetricRef` used by `get()`) that
-//! branch on the metric `kind` token. Splitting by position (rather than one
-//! macro branching on kind that emits everything) is what keeps this
-//! representable in plain `macro_rules!` — each position only needs to know
-//! how to produce one kind of output for a given kind, not stitch together a
-//! whole item.
+//! The expansion has three stages:
+//!
+//! 1. `metrics!` and `__embeprom_metrics_options!` normalize registration and
+//!    the optional namespace.
+//! 2. `__embeprom_metrics_parse!` is a token-tree muncher that translates the
+//!    user-facing, Rust-like declarations into one uniform internal list.
+//! 3. `__embeprom_metrics_generate!` emits the group. Small dispatch macros
+//!    choose each field's type, initializer, and erased `MetricRef` from that
+//!    internal list.
+//!
+//! The final split by output position is required by `macro_rules!`: one
+//! nested macro cannot expand to a struct field, constructor expression, and
+//! match-like branch at once.
 
 /// Declare a module-scoped metrics group: a `Metrics` struct with one field
 /// per metric, renderable via [`crate::Renderer`]. The generated `get()`
@@ -58,6 +63,18 @@
 /// }
 /// ```
 ///
+/// Label metadata is checked while the generated static is constructed:
+///
+/// ```compile_fail
+/// mod metrics {
+///     embeprom::metrics! {
+///         /// Requests by an invalid label name.
+///         #[labels("not-valid")]
+///         requests: CounterVec<1>,
+///     }
+/// }
+/// ```
+///
 /// Supported types are [`crate::Counter`], [`crate::Gauge`], `GaugeF64`
 /// (feature `float`), `CounterVec<N>`, `GaugeVec<N>`,
 /// [`crate::IntHistogram`], `Histogram` (feature `float`),
@@ -92,70 +109,72 @@ macro_rules! __embeprom_metrics_options {
         $crate::__embeprom_metrics_parse!([$($registration)*] [$ns] [] $($rest)*);
     };
     ([$($registration:tt)*] $($rest:tt)*) => {
-        $crate::__embeprom_metrics_parse!([$($registration)*] [] [] $($rest)*);
+        $crate::__embeprom_metrics_parse!([$($registration)*] [""] [] $($rest)*);
     };
 }
 
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __embeprom_metrics_parse {
-    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]) => {
+    ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]) => {
         $crate::__embeprom_metrics_generate!(
             [$($registration)*]
-            [$($ns)?]
+            [$ns]
             $($metrics)*
         );
     };
 
     // Scalar metrics.
-    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+    ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         $field:ident: Counter, $($rest:tt)*) => {
         $crate::__embeprom_metrics_parse!(
-            [$($registration)*] [$($ns)?]
+            [$($registration)*] [$ns]
             [$($metrics)* #[doc = $help] $(#[doc = $more_docs])* counter $field = $help;]
             $($rest)*
         );
     };
-    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+    ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         $field:ident: Gauge, $($rest:tt)*) => {
         $crate::__embeprom_metrics_parse!(
-            [$($registration)*] [$($ns)?]
+            [$($registration)*] [$ns]
             [$($metrics)* #[doc = $help] $(#[doc = $more_docs])* gauge $field = $help;]
             $($rest)*
         );
     };
-    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+    ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         $field:ident: GaugeF64, $($rest:tt)*) => {
-        $crate::__embeprom_metrics_parse!(
-            [$($registration)*] [$($ns)?]
-            [$($metrics)* #[doc = $help] $(#[doc = $more_docs])* gauge_f64 $field = $help;]
-            $($rest)*
-        );
+        $crate::__embeprom_if_float! {
+            $crate::__embeprom_metrics_parse!(
+                [$($registration)*] [$ns]
+                [$($metrics)* #[doc = $help] $(#[doc = $more_docs])* gauge_f64 $field = $help;]
+                $($rest)*
+            );
+        }
     };
 
     // Counter and gauge vectors.
-    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+    ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         #[labels($($label:literal),+)]
         $(#[label_bytes($label_bytes:literal)])?
         $field:ident: CounterVec<$cap:literal>, $($rest:tt)*) => {
         $crate::__embeprom_metrics_parse!(
-            [$($registration)*] [$($ns)?]
+            [$($registration)*] [$ns]
             [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
                 counter_vec<$cap $(, label_bytes: $label_bytes)?> $field[$($label),+] = $help;]
             $($rest)*
         );
     };
-    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+    ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         #[labels($($label:literal),+)]
         $(#[label_bytes($label_bytes:literal)])?
         $field:ident: GaugeVec<$cap:literal>, $($rest:tt)*) => {
         $crate::__embeprom_metrics_parse!(
-            [$($registration)*] [$($ns)?]
+            [$($registration)*] [$ns]
             [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
                 gauge_vec<$cap $(, label_bytes: $label_bytes)?> $field[$($label),+] = $help;]
             $($rest)*
@@ -163,60 +182,64 @@ macro_rules! __embeprom_metrics_parse {
     };
 
     // Scalar histograms.
-    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+    ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         #[buckets($($bucket:literal),+)]
         $field:ident: IntHistogram, $($rest:tt)*) => {
         $crate::__embeprom_metrics_parse!(
-            [$($registration)*] [$($ns)?]
+            [$($registration)*] [$ns]
             [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
                 int_histogram $field[buckets: $($bucket),+] = $help;]
             $($rest)*
         );
     };
-    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+    ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         #[buckets($($bucket:literal),+)]
         $field:ident: Histogram, $($rest:tt)*) => {
-        $crate::__embeprom_metrics_parse!(
-            [$($registration)*] [$($ns)?]
-            [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
-                histogram $field[buckets: $($bucket),+] = $help;]
-            $($rest)*
-        );
+        $crate::__embeprom_if_float! {
+            $crate::__embeprom_metrics_parse!(
+                [$($registration)*] [$ns]
+                [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
+                    histogram $field[buckets: $($bucket),+] = $help;]
+                $($rest)*
+            );
+        }
     };
 
     // Histogram vectors.
-    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+    ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         #[labels($($label:literal),+)]
         #[buckets($($bucket:literal),+)]
         $(#[label_bytes($label_bytes:literal)])?
         $field:ident: IntHistogramVec<$cap:literal>, $($rest:tt)*) => {
         $crate::__embeprom_metrics_parse!(
-            [$($registration)*] [$($ns)?]
+            [$($registration)*] [$ns]
             [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
                 int_histogram_vec<$cap $(, label_bytes: $label_bytes)?>
                 $field[$($label),+; buckets: $($bucket),+] = $help;]
             $($rest)*
         );
     };
-    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*]
+    ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         #[labels($($label:literal),+)]
         #[buckets($($bucket:literal),+)]
         $(#[label_bytes($label_bytes:literal)])?
         $field:ident: HistogramVec<$cap:literal>, $($rest:tt)*) => {
-        $crate::__embeprom_metrics_parse!(
-            [$($registration)*] [$($ns)?]
-            [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
-                histogram_vec<$cap $(, label_bytes: $label_bytes)?>
-                $field[$($label),+; buckets: $($bucket),+] = $help;]
-            $($rest)*
-        );
+        $crate::__embeprom_if_float! {
+            $crate::__embeprom_metrics_parse!(
+                [$($registration)*] [$ns]
+                [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
+                    histogram_vec<$cap $(, label_bytes: $label_bytes)?>
+                    $field[$($label),+; buckets: $($bucket),+] = $help;]
+                $($rest)*
+            );
+        }
     };
 
-    ([$($registration:tt)*] [$($ns:literal)?] [$($metrics:tt)*] $($invalid:tt)+) => {
+    ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*] $($invalid:tt)+) => {
         compile_error!(concat!(
             "embeprom: invalid metrics! declaration near `",
             stringify!($($invalid)+),
@@ -225,38 +248,20 @@ macro_rules! __embeprom_metrics_parse {
     };
 }
 
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __embeprom_require_kind_feature {
-    (counter) => {};
-    (gauge) => {};
-    (counter_vec) => {};
-    (gauge_vec) => {};
-    (int_histogram) => {};
-    (int_histogram_vec) => {};
-    (gauge_f64) => {
-        $crate::__embeprom_require_float!();
-    };
-    (histogram) => {
-        $crate::__embeprom_require_float!();
-    };
-    (histogram_vec) => {
-        $crate::__embeprom_require_float!();
-    };
-}
-
 #[cfg(feature = "float")]
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __embeprom_require_float {
-    () => {};
+macro_rules! __embeprom_if_float {
+    ($($tokens:tt)*) => {
+        $($tokens)*
+    };
 }
 
 #[cfg(not(feature = "float"))]
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __embeprom_require_float {
-    () => {
+macro_rules! __embeprom_if_float {
+    ($($tokens:tt)*) => {
         compile_error!(
             "embeprom: floating-point metric kinds require enabling the `float` feature"
         );
@@ -268,23 +273,19 @@ macro_rules! __embeprom_require_float {
 macro_rules! __embeprom_metrics_generate {
     (
         [$($registration:tt)*]
-        [$($ns:literal)?]
+        [$ns:literal]
     ) => {
         compile_error!("embeprom: a metrics! group must declare at least one metric");
     };
     (
         [$($registration:tt)*]
-        [$($ns:literal)?]
+        [$ns:literal]
         $(
             $(#[$fmeta:meta])*
             $kind:ident $(< $cap:literal $(, label_bytes: $label_bytes:literal)? >)? $field:ident
                 $([ $($extra:tt)* ])? = $help:literal ;
         )+
     ) => {
-        $(
-            $crate::__embeprom_require_kind_feature!($kind);
-        )*
-
         /// The metrics declared in this module.
         pub struct Metrics {
             $(
@@ -318,16 +319,13 @@ macro_rules! __embeprom_metrics_generate {
                     $crate::valid_metric_name(::core::stringify!($field)),
                     "embeprom: invalid metric name"
                 );
-                $crate::__embeprom_validate_labels!(@validate $kind $(, $cap)? ; $($($extra)*)?);
             )+
-            $(
-                assert!($crate::valid_metric_name($ns), "embeprom: invalid namespace");
-            )?
+            assert!($crate::valid_metric_name($ns), "embeprom: invalid namespace");
         };
 
         impl $crate::MetricGroup for Metrics {
             fn group_name(&self) -> &'static str {
-                $crate::__embeprom_ns!($($ns)?)
+                $ns
             }
 
             fn len(&self) -> usize {
@@ -335,14 +333,11 @@ macro_rules! __embeprom_metrics_generate {
             }
 
             fn get(&self, index: usize) -> ::core::option::Option<$crate::MetricDesc<'_>> {
-                const NAMESPACE: &str = $crate::__embeprom_ns!($($ns)?);
-                let _ = NAMESPACE;
-                #[allow(unused_mut)]
                 let mut i = index;
                 $(
                     if i == 0 {
                         return ::core::option::Option::Some($crate::MetricDesc {
-                            namespace: NAMESPACE,
+                            namespace: $ns,
                             name: ::core::stringify!($field),
                             help: $help.strip_prefix(' ').unwrap_or($help),
                             metric: $crate::__embeprom_ref!(
@@ -378,9 +373,7 @@ macro_rules! __embeprom_register_mode {
         static ONCE: $crate::OnceRegister = $crate::OnceRegister::new();
         ONCE.ensure_in(&$registry, $group);
     };
-    ([manual] $group:expr) => {
-        let _ = $group;
-    };
+    ([manual] $_group:expr) => {};
 }
 
 /// Register several metric groups with the global registry in one call. See
@@ -454,16 +447,10 @@ macro_rules! __embeprom_init {
     (@init counter ;) => { $crate::Counter::new() };
     (@init gauge ;) => { $crate::Gauge::new(0) };
     (@init gauge_f64 ;) => { $crate::GaugeF64::new(0.0) };
-    (@init counter_vec, $cap:literal, $label_bytes:literal ; $($l:literal),+) => {
+    (@init counter_vec, $_cap:literal $(, $_label_bytes:literal)? ; $($l:literal),+) => {
         $crate::CounterVec::new(&[$($l),+])
     };
-    (@init counter_vec, $cap:literal ; $($l:literal),+) => {
-        $crate::CounterVec::new(&[$($l),+])
-    };
-    (@init gauge_vec, $cap:literal, $label_bytes:literal ; $($l:literal),+) => {
-        $crate::GaugeVec::new(&[$($l),+])
-    };
-    (@init gauge_vec, $cap:literal ; $($l:literal),+) => {
+    (@init gauge_vec, $_cap:literal $(, $_label_bytes:literal)? ; $($l:literal),+) => {
         $crate::GaugeVec::new(&[$($l),+])
     };
     (@init int_histogram ; buckets: $($b:literal),+) => {
@@ -472,16 +459,10 @@ macro_rules! __embeprom_init {
     (@init histogram ; buckets: $($b:literal),+) => {
         $crate::Histogram::new(&[$($b),+])
     };
-    (@init int_histogram_vec, $cap:literal, $label_bytes:literal ; $($l:literal),+ ; buckets: $($b:literal),+) => {
+    (@init int_histogram_vec, $_cap:literal $(, $_label_bytes:literal)? ; $($l:literal),+ ; buckets: $($b:literal),+) => {
         $crate::IntHistogramVec::new(&[$($l),+], &[$($b),+])
     };
-    (@init int_histogram_vec, $cap:literal ; $($l:literal),+ ; buckets: $($b:literal),+) => {
-        $crate::IntHistogramVec::new(&[$($l),+], &[$($b),+])
-    };
-    (@init histogram_vec, $cap:literal, $label_bytes:literal ; $($l:literal),+ ; buckets: $($b:literal),+) => {
-        $crate::HistogramVec::new(&[$($l),+], &[$($b),+])
-    };
-    (@init histogram_vec, $cap:literal ; $($l:literal),+ ; buckets: $($b:literal),+) => {
+    (@init histogram_vec, $_cap:literal $(, $_label_bytes:literal)? ; $($l:literal),+ ; buckets: $($b:literal),+) => {
         $crate::HistogramVec::new(&[$($l),+], &[$($b),+])
     };
 }
@@ -498,45 +479,23 @@ macro_rules! __embeprom_ref {
     (@ref gauge_f64 ; $e:expr ;) => {
         $crate::MetricRef::Gauge($crate::Value::F64($e.get()))
     };
-    (@ref counter_vec ; $e:expr ; $($l:literal),+) => {
+    (@ref counter_vec ; $e:expr ; $($_label:literal),+) => {
         $crate::MetricRef::CounterVec(&$e)
     };
-    (@ref gauge_vec ; $e:expr ; $($l:literal),+) => {
+    (@ref gauge_vec ; $e:expr ; $($_label:literal),+) => {
         $crate::MetricRef::GaugeVec(&$e)
     };
-    (@ref int_histogram ; $e:expr ; buckets: $($b:literal),+) => {
+    (@ref int_histogram ; $e:expr ; buckets: $($_bucket:literal),+) => {
         $crate::MetricRef::Histogram { h: &$e }
     };
-    (@ref histogram ; $e:expr ; buckets: $($b:literal),+) => {
+    (@ref histogram ; $e:expr ; buckets: $($_bucket:literal),+) => {
         $crate::MetricRef::Histogram { h: &$e }
     };
-    (@ref int_histogram_vec ; $e:expr ; $($l:literal),+ ; buckets: $($b:literal),+) => {
+    (@ref int_histogram_vec ; $e:expr ; $($_label:literal),+ ; buckets: $($_bucket:literal),+) => {
         $crate::MetricRef::HistogramVec { h: &$e }
     };
-    (@ref histogram_vec ; $e:expr ; $($l:literal),+ ; buckets: $($b:literal),+) => {
+    (@ref histogram_vec ; $e:expr ; $($_label:literal),+ ; buckets: $($_bucket:literal),+) => {
         $crate::MetricRef::HistogramVec { h: &$e }
-    };
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __embeprom_validate_labels {
-    (@validate counter ;) => { {} };
-    (@validate gauge ;) => { {} };
-    (@validate gauge_f64 ;) => { {} };
-    (@validate int_histogram ; buckets: $($b:literal),+) => { {} };
-    (@validate histogram ; buckets: $($b:literal),+) => { {} };
-    (@validate counter_vec, $cap:literal ; $($l:literal),+) => {
-        { $( assert!($crate::valid_label_name($l), "embeprom: invalid label name"); )+ }
-    };
-    (@validate gauge_vec, $cap:literal ; $($l:literal),+) => {
-        { $( assert!($crate::valid_label_name($l), "embeprom: invalid label name"); )+ }
-    };
-    (@validate int_histogram_vec, $cap:literal ; $($l:literal),+ ; buckets: $($b:literal),+) => {
-        { $( assert!($crate::valid_label_name($l), "embeprom: invalid label name"); )+ }
-    };
-    (@validate histogram_vec, $cap:literal ; $($l:literal),+ ; buckets: $($b:literal),+) => {
-        { $( assert!($crate::valid_label_name($l), "embeprom: invalid label name"); )+ }
     };
 }
 
@@ -544,26 +503,7 @@ macro_rules! __embeprom_validate_labels {
 #[macro_export]
 macro_rules! __embeprom_count {
     ($($x:tt),*) => {
-        <[()]>::len(&[$($crate::__embeprom_unit!($x)),*])
-    };
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __embeprom_unit {
-    ($x:tt) => {
-        ()
-    };
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __embeprom_ns {
-    () => {
-        ""
-    };
-    ($ns:literal) => {
-        $ns
+        [$(::core::stringify!($x)),*].len()
     };
 }
 
@@ -698,6 +638,46 @@ mod tests {
         assert_eq!(group.get(0).unwrap().name, "requests");
     }
 
+    mod multiline_docs_metrics {
+        crate::metrics! {
+            registration = manual;
+
+            /// First-line help.
+            ///
+            /// Additional Rust documentation.
+            requests: Counter,
+        }
+    }
+
+    #[test]
+    fn first_doc_line_is_the_prometheus_help() {
+        let group: &dyn MetricGroup = multiline_docs_metrics::get();
+        assert_eq!(group.get(0).unwrap().help, "First-line help.");
+    }
+
+    mod custom_label_bytes_metrics {
+        crate::metrics! {
+            registration = manual;
+
+            /// Queue depth.
+            #[labels("queue")]
+            #[label_bytes(18)]
+            queue_depth: GaugeVec<2>,
+            /// Per-peer latency.
+            #[labels("peer")]
+            #[buckets(10, 50)]
+            #[label_bytes(18)]
+            peer_latency: IntHistogramVec<2>,
+        }
+    }
+
+    #[test]
+    fn custom_label_bytes_apply_to_gauge_and_integer_histogram_vectors() {
+        let metrics = custom_label_bytes_metrics::get();
+        let _: &crate::GaugeVec<2, 1, 18> = &metrics.queue_depth;
+        let _: &crate::IntHistogramVec<2, 2, 1, 18> = &metrics.peer_latency;
+    }
+
     #[cfg(feature = "float")]
     mod float_metrics {
         crate::metrics! {
@@ -712,6 +692,7 @@ mod tests {
             /// Per-peer RTT.
             #[labels("peer")]
             #[buckets(0.05, 0.5)]
+            #[label_bytes(18)]
             peer_rtt_s: HistogramVec<4>,
         }
     }
@@ -728,6 +709,7 @@ mod tests {
         assert_eq!(m.cpu_temp_c.get().to_bits(), 42.5_f64.to_bits());
         assert_eq!(m.request_latency_s.count(), 1);
         assert_eq!(m.queue_depth.with(&["ingress"]).get(), 3);
+        let _: &crate::HistogramVec<4, 2, 1, 18> = &m.peer_rtt_s;
 
         let group: &dyn MetricGroup = m;
         assert_eq!(group.len(), 4);
