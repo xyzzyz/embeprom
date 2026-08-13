@@ -212,9 +212,9 @@
 //! # Labeled metrics and cardinality
 //!
 //! [`CounterVec`], [`GaugeVec`], [`IntHistogramVec`] (and, with the `float`
-//! feature, [`GaugeF64Vec`] and [`HistogramVec`]) each declare a maximum number of distinct
-//! label-value combinations via a const generic (e.g. `CounterVec<4>` for up
-//! to 4 series). Once that capacity is exhausted, newly observed label
+//! feature, `GaugeF64Vec` and `HistogramVec`) each declare a maximum number of
+//! distinct label-value combinations via a const generic (e.g. `CounterVec<4>`
+//! for up to 4 series). Once that capacity is exhausted, newly observed label
 //! combinations are silently routed to unrendered sink handles whose updates
 //! are no-ops, while existing series keep updating normally. Oversized
 //! rendered label blocks use the same sink behavior.
