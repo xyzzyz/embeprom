@@ -90,7 +90,11 @@
 /// (feature `float`), [`crate::IntHistogram`], `Histogram` (feature `float`),
 /// `IntHistogramVec<N>`, and `HistogramVec<N>` (feature `float`). Vec fields
 /// declare their label names with `#[labels("name", ...)]`; histogram fields
-/// declare finite bucket bounds with `#[buckets(10, 50, ...)]`. A vec can set
+/// declare finite bucket bounds with `#[buckets(10, 50, ...)]`. Capacities,
+/// `#[buckets(...)]` bounds, and `#[label_bytes(...)]` accept `const` items
+/// and other const expressions (`CounterVec<MAX_REASONS>`,
+/// `#[buckets(TIMEOUT_US, 5 * TIMEOUT_US)]`); vec capacity and
+/// `#[label_bytes]` must be a single token (a literal or ident). A vec can set
 /// its rendered label-block allocation independently of the crate-wide default
 /// with `#[label_bytes(24)]`.
 ///
@@ -186,8 +190,8 @@ macro_rules! __embeprom_metrics_parse {
     ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         #[labels($($label:literal),+)]
-        $(#[label_bytes($label_bytes:literal)])?
-        $field:ident: CounterVec<$cap:literal>, $($rest:tt)*) => {
+        $(#[label_bytes($label_bytes:tt)])?
+        $field:ident: CounterVec<$cap:tt>, $($rest:tt)*) => {
         $crate::__embeprom_metrics_parse!(
             [$($registration)*] [$ns]
             [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
@@ -198,8 +202,8 @@ macro_rules! __embeprom_metrics_parse {
     ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         #[labels($($label:literal),+)]
-        $(#[label_bytes($label_bytes:literal)])?
-        $field:ident: GaugeVec<$cap:literal>, $($rest:tt)*) => {
+        $(#[label_bytes($label_bytes:tt)])?
+        $field:ident: GaugeVec<$cap:tt>, $($rest:tt)*) => {
         $crate::__embeprom_metrics_parse!(
             [$($registration)*] [$ns]
             [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
@@ -210,8 +214,8 @@ macro_rules! __embeprom_metrics_parse {
     ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         #[labels($($label:literal),+)]
-        $(#[label_bytes($label_bytes:literal)])?
-        $field:ident: GaugeF64Vec<$cap:literal>, $($rest:tt)*) => {
+        $(#[label_bytes($label_bytes:tt)])?
+        $field:ident: GaugeF64Vec<$cap:tt>, $($rest:tt)*) => {
         $crate::__embeprom_if_float! {
             $crate::__embeprom_metrics_parse!(
                 [$($registration)*] [$ns]
@@ -225,7 +229,7 @@ macro_rules! __embeprom_metrics_parse {
     // Scalar histograms.
     ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
-        #[buckets($($bucket:literal),+)]
+        #[buckets($($bucket:expr),+)]
         $field:ident: IntHistogram, $($rest:tt)*) => {
         $crate::__embeprom_metrics_parse!(
             [$($registration)*] [$ns]
@@ -236,7 +240,7 @@ macro_rules! __embeprom_metrics_parse {
     };
     ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
-        #[buckets($($bucket:literal),+)]
+        #[buckets($($bucket:expr),+)]
         $field:ident: Histogram, $($rest:tt)*) => {
         $crate::__embeprom_if_float! {
             $crate::__embeprom_metrics_parse!(
@@ -252,9 +256,9 @@ macro_rules! __embeprom_metrics_parse {
     ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         #[labels($($label:literal),+)]
-        #[buckets($($bucket:literal),+)]
-        $(#[label_bytes($label_bytes:literal)])?
-        $field:ident: IntHistogramVec<$cap:literal>, $($rest:tt)*) => {
+        #[buckets($($bucket:expr),+)]
+        $(#[label_bytes($label_bytes:tt)])?
+        $field:ident: IntHistogramVec<$cap:tt>, $($rest:tt)*) => {
         $crate::__embeprom_metrics_parse!(
             [$($registration)*] [$ns]
             [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
@@ -266,9 +270,9 @@ macro_rules! __embeprom_metrics_parse {
     ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
         #[doc = $help:literal] $(#[doc = $more_docs:literal])*
         #[labels($($label:literal),+)]
-        #[buckets($($bucket:literal),+)]
-        $(#[label_bytes($label_bytes:literal)])?
-        $field:ident: HistogramVec<$cap:literal>, $($rest:tt)*) => {
+        #[buckets($($bucket:expr),+)]
+        $(#[label_bytes($label_bytes:tt)])?
+        $field:ident: HistogramVec<$cap:tt>, $($rest:tt)*) => {
         $crate::__embeprom_if_float! {
             $crate::__embeprom_metrics_parse!(
                 [$($registration)*] [$ns]
@@ -323,7 +327,7 @@ macro_rules! __embeprom_metrics_generate {
         [$ns:literal]
         $(
             $(#[$fmeta:meta])*
-            $kind:ident $(< $cap:literal $(, label_bytes: $label_bytes:literal)? >)? $field:ident
+            $kind:ident $(< $cap:tt $(, label_bytes: $label_bytes:tt)? >)? $field:ident
                 $([ $($extra:tt)* ])? = $help:literal ;
         )+
     ) => {
@@ -423,56 +427,56 @@ macro_rules! __embeprom_ty {
     (@ty counter ;) => { $crate::Counter };
     (@ty gauge ;) => { $crate::Gauge };
     (@ty gauge_f64 ;) => { $crate::GaugeF64 };
-    (@ty counter_vec, $cap:literal, $label_bytes:literal ; $($l:literal),+) => {
-        $crate::CounterVec<$cap, { $crate::__embeprom_count!($($l),+) }, $label_bytes>
+    (@ty counter_vec, $cap:tt, $label_bytes:tt ; $($l:literal),+) => {
+        $crate::CounterVec<{ $cap }, { $crate::__embeprom_count!($($l),+) }, { $label_bytes }>
     };
-    (@ty counter_vec, $cap:literal ; $($l:literal),+) => {
-        $crate::CounterVec<$cap, { $crate::__embeprom_count!($($l),+) }>
+    (@ty counter_vec, $cap:tt ; $($l:literal),+) => {
+        $crate::CounterVec<{ $cap }, { $crate::__embeprom_count!($($l),+) }>
     };
-    (@ty gauge_vec, $cap:literal, $label_bytes:literal ; $($l:literal),+) => {
-        $crate::GaugeVec<$cap, { $crate::__embeprom_count!($($l),+) }, $label_bytes>
+    (@ty gauge_vec, $cap:tt, $label_bytes:tt ; $($l:literal),+) => {
+        $crate::GaugeVec<{ $cap }, { $crate::__embeprom_count!($($l),+) }, { $label_bytes }>
     };
-    (@ty gauge_vec, $cap:literal ; $($l:literal),+) => {
-        $crate::GaugeVec<$cap, { $crate::__embeprom_count!($($l),+) }>
+    (@ty gauge_vec, $cap:tt ; $($l:literal),+) => {
+        $crate::GaugeVec<{ $cap }, { $crate::__embeprom_count!($($l),+) }>
     };
-    (@ty gauge_f64_vec, $cap:literal, $label_bytes:literal ; $($l:literal),+) => {
-        $crate::GaugeF64Vec<$cap, { $crate::__embeprom_count!($($l),+) }, $label_bytes>
+    (@ty gauge_f64_vec, $cap:tt, $label_bytes:tt ; $($l:literal),+) => {
+        $crate::GaugeF64Vec<{ $cap }, { $crate::__embeprom_count!($($l),+) }, { $label_bytes }>
     };
-    (@ty gauge_f64_vec, $cap:literal ; $($l:literal),+) => {
-        $crate::GaugeF64Vec<$cap, { $crate::__embeprom_count!($($l),+) }>
+    (@ty gauge_f64_vec, $cap:tt ; $($l:literal),+) => {
+        $crate::GaugeF64Vec<{ $cap }, { $crate::__embeprom_count!($($l),+) }>
     };
-    (@ty int_histogram ; buckets: $($b:literal),+) => {
+    (@ty int_histogram ; buckets: $($b:expr),+) => {
         $crate::IntHistogram<{ $crate::__embeprom_count!($($b),+) }>
     };
-    (@ty histogram ; buckets: $($b:literal),+) => {
+    (@ty histogram ; buckets: $($b:expr),+) => {
         $crate::Histogram<{ $crate::__embeprom_count!($($b),+) }>
     };
-    (@ty int_histogram_vec, $cap:literal, $label_bytes:literal ; $($l:literal),+ ; buckets: $($b:literal),+) => {
+    (@ty int_histogram_vec, $cap:tt, $label_bytes:tt ; $($l:literal),+ ; buckets: $($b:expr),+) => {
         $crate::IntHistogramVec<
-            $cap,
+            { $cap },
             { $crate::__embeprom_count!($($b),+) },
             { $crate::__embeprom_count!($($l),+) },
-            $label_bytes,
+            { $label_bytes },
         >
     };
-    (@ty int_histogram_vec, $cap:literal ; $($l:literal),+ ; buckets: $($b:literal),+) => {
+    (@ty int_histogram_vec, $cap:tt ; $($l:literal),+ ; buckets: $($b:expr),+) => {
         $crate::IntHistogramVec<
-            $cap,
+            { $cap },
             { $crate::__embeprom_count!($($b),+) },
             { $crate::__embeprom_count!($($l),+) },
         >
     };
-    (@ty histogram_vec, $cap:literal, $label_bytes:literal ; $($l:literal),+ ; buckets: $($b:literal),+) => {
+    (@ty histogram_vec, $cap:tt, $label_bytes:tt ; $($l:literal),+ ; buckets: $($b:expr),+) => {
         $crate::HistogramVec<
-            $cap,
+            { $cap },
             { $crate::__embeprom_count!($($b),+) },
             { $crate::__embeprom_count!($($l),+) },
-            $label_bytes,
+            { $label_bytes },
         >
     };
-    (@ty histogram_vec, $cap:literal ; $($l:literal),+ ; buckets: $($b:literal),+) => {
+    (@ty histogram_vec, $cap:tt ; $($l:literal),+ ; buckets: $($b:expr),+) => {
         $crate::HistogramVec<
-            $cap,
+            { $cap },
             { $crate::__embeprom_count!($($b),+) },
             { $crate::__embeprom_count!($($l),+) },
         >
@@ -485,25 +489,25 @@ macro_rules! __embeprom_init {
     (@init counter ;) => { $crate::Counter::new() };
     (@init gauge ;) => { $crate::Gauge::new(0) };
     (@init gauge_f64 ;) => { $crate::GaugeF64::new(0.0) };
-    (@init counter_vec, $_cap:literal $(, $_label_bytes:literal)? ; $($l:literal),+) => {
+    (@init counter_vec, $_cap:tt $(, $_label_bytes:tt)? ; $($l:literal),+) => {
         $crate::CounterVec::new(&[$($l),+])
     };
-    (@init gauge_vec, $_cap:literal $(, $_label_bytes:literal)? ; $($l:literal),+) => {
+    (@init gauge_vec, $_cap:tt $(, $_label_bytes:tt)? ; $($l:literal),+) => {
         $crate::GaugeVec::new(&[$($l),+])
     };
-    (@init gauge_f64_vec, $_cap:literal $(, $_label_bytes:literal)? ; $($l:literal),+) => {
+    (@init gauge_f64_vec, $_cap:tt $(, $_label_bytes:tt)? ; $($l:literal),+) => {
         $crate::GaugeF64Vec::new(&[$($l),+])
     };
-    (@init int_histogram ; buckets: $($b:literal),+) => {
+    (@init int_histogram ; buckets: $($b:expr),+) => {
         $crate::IntHistogram::new(&[$($b),+])
     };
-    (@init histogram ; buckets: $($b:literal),+) => {
+    (@init histogram ; buckets: $($b:expr),+) => {
         $crate::Histogram::new(&[$($b),+])
     };
-    (@init int_histogram_vec, $_cap:literal $(, $_label_bytes:literal)? ; $($l:literal),+ ; buckets: $($b:literal),+) => {
+    (@init int_histogram_vec, $_cap:tt $(, $_label_bytes:tt)? ; $($l:literal),+ ; buckets: $($b:expr),+) => {
         $crate::IntHistogramVec::new(&[$($l),+], &[$($b),+])
     };
-    (@init histogram_vec, $_cap:literal $(, $_label_bytes:literal)? ; $($l:literal),+ ; buckets: $($b:literal),+) => {
+    (@init histogram_vec, $_cap:tt $(, $_label_bytes:tt)? ; $($l:literal),+ ; buckets: $($b:expr),+) => {
         $crate::HistogramVec::new(&[$($l),+], &[$($b),+])
     };
 }
@@ -529,16 +533,16 @@ macro_rules! __embeprom_ref {
     (@ref gauge_f64_vec ; $e:expr ; $($_label:literal),+) => {
         $crate::MetricRef::GaugeVec(&$e)
     };
-    (@ref int_histogram ; $e:expr ; buckets: $($_bucket:literal),+) => {
+    (@ref int_histogram ; $e:expr ; buckets: $($_bucket:expr),+) => {
         $crate::MetricRef::Histogram { h: &$e }
     };
-    (@ref histogram ; $e:expr ; buckets: $($_bucket:literal),+) => {
+    (@ref histogram ; $e:expr ; buckets: $($_bucket:expr),+) => {
         $crate::MetricRef::Histogram { h: &$e }
     };
-    (@ref int_histogram_vec ; $e:expr ; $($_label:literal),+ ; buckets: $($_bucket:literal),+) => {
+    (@ref int_histogram_vec ; $e:expr ; $($_label:literal),+ ; buckets: $($_bucket:expr),+) => {
         $crate::MetricRef::HistogramVec { h: &$e }
     };
-    (@ref histogram_vec ; $e:expr ; $($_label:literal),+ ; buckets: $($_bucket:literal),+) => {
+    (@ref histogram_vec ; $e:expr ; $($_label:literal),+ ; buckets: $($_bucket:expr),+) => {
         $crate::MetricRef::HistogramVec { h: &$e }
     };
 }
@@ -546,7 +550,7 @@ macro_rules! __embeprom_ref {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __embeprom_count {
-    ($($x:tt),*) => {
+    ($($x:expr),*) => {
         [$(::core::stringify!($x)),*].len()
     };
 }
@@ -795,6 +799,46 @@ mod tests {
         assert!(out.contains("payload_bytes_bucket{le=\"2000\"}"));
         assert!(!out.contains("1_000u64"));
         assert!(!out.contains("0x7d0u64"));
+    }
+
+    mod const_expr_metrics {
+        const MAX_REASONS: usize = 4;
+        const TIMEOUT_US: u64 = 100;
+        const LABEL_BYTES: usize = 18;
+
+        crate::metrics! {
+            registration = manual;
+
+            /// Disconnects by reason.
+            #[labels("reason")]
+            disconnects: CounterVec<MAX_REASONS>,
+            /// Completion latency.
+            #[buckets(TIMEOUT_US, 5 * TIMEOUT_US)]
+            latency_us: IntHistogram,
+            /// Queue depth.
+            #[labels("queue")]
+            #[label_bytes(LABEL_BYTES)]
+            queue_depth: GaugeVec<2>,
+            /// Per-peer latency.
+            #[labels("peer")]
+            #[buckets(TIMEOUT_US, 5 * TIMEOUT_US)]
+            #[label_bytes(LABEL_BYTES)]
+            peer_latency_us: IntHistogramVec<MAX_REASONS>,
+        }
+    }
+
+    #[test]
+    fn capacities_and_buckets_accept_const_expressions() {
+        let metrics = const_expr_metrics::get();
+        let _: &crate::CounterVec<4> = &metrics.disconnects;
+        let _: &crate::IntHistogram<2> = &metrics.latency_us;
+        let _: &crate::GaugeVec<2, 1, 18> = &metrics.queue_depth;
+        let _: &crate::IntHistogramVec<4, 2, 1, 18> = &metrics.peer_latency_us;
+
+        metrics.latency_us.observe(100);
+        metrics.peer_latency_us.observe(&["ap-1"], 500);
+        assert_eq!(metrics.latency_us.count(), 1);
+        assert_eq!(metrics.peer_latency_us.with(&["ap-1"]).bucket(1), 1);
     }
 
     static NAMED_REGISTRY: crate::Registry<1> = crate::Registry::new();

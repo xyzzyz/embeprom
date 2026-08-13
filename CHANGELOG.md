@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `impl Into<IntHistSeries<'a>>` (or `HistSeries`) and accept either.
 - `GaugeF64` now has `sub` / `inc` / `dec`, matching `Gauge`.
 - `RegistryFull` implements `Display` and `core::error::Error`.
+- `metrics!` accepts `const` items and const expressions for vec
+  capacities, `#[buckets(...)]`, and `#[label_bytes(...)]`.
 
 ### Changed
 
