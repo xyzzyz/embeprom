@@ -28,6 +28,9 @@ use crate::gauge::GaugeF64;
 use crate::histogram::validate_f64_bounds;
 use crate::histogram::validate_u64_bounds;
 use crate::labels::{LabelBlock, build_block};
+#[cfg(feature = "float")]
+use crate::series::HistSeries;
+use crate::series::IntHistSeries;
 use crate::value::Value;
 
 type KeyMap<const N: usize, const V: usize> = Mutex<RefCell<heapless::Vec<LabelBlock<V>, N>>>;
@@ -488,104 +491,6 @@ impl<const N: usize, const K: usize, const V: usize> ErasedGaugeVec for GaugeF64
     }
 }
 
-#[derive(Clone, Copy)]
-struct IntHistMetric<'a> {
-    buckets: &'a [AtomicU64],
-    sum: &'a AtomicU64,
-    count: &'a AtomicU64,
-}
-
-/// An infallible, reusable handle to one [`IntHistogramVec`] series, returned
-/// by [`IntHistogramVec::with`]. Retaining this handle avoids later label-map
-/// lookups. A rejected binding produces an unrendered sink whose observations
-/// are no-ops and whose reads return zero.
-#[derive(Clone, Copy)]
-pub struct IntHistSeries<'a> {
-    bounds: &'static [u64],
-    metric: Option<IntHistMetric<'a>>,
-}
-
-impl<'a> IntHistSeries<'a> {
-    fn bound(
-        bounds: &'static [u64],
-        buckets: &'a [AtomicU64],
-        sum: &'a AtomicU64,
-        count: &'a AtomicU64,
-    ) -> Self {
-        Self {
-            bounds,
-            metric: Some(IntHistMetric {
-                buckets,
-                sum,
-                count,
-            }),
-        }
-    }
-
-    const fn sink(bounds: &'static [u64]) -> Self {
-        Self {
-            bounds,
-            metric: None,
-        }
-    }
-
-    /// Record an observation, or do nothing if this is a sink. With
-    /// `consistent-histograms`, real-series observations are serialized so a
-    /// concurrent renderer can take a coherent snapshot.
-    #[inline]
-    pub fn observe(&self, v: u64) {
-        let Some(metric) = self.metric else {
-            return;
-        };
-        #[cfg(feature = "consistent-histograms")]
-        critical_section::with(|_cs| Self::observe_inner(self.bounds, metric, v));
-        #[cfg(not(feature = "consistent-histograms"))]
-        Self::observe_inner(self.bounds, metric, v);
-    }
-
-    #[inline]
-    fn observe_inner(bounds: &[u64], metric: IntHistMetric<'_>, v: u64) {
-        if let Some(i) = bounds.iter().position(|bound| v <= *bound) {
-            metric.buckets[i].fetch_add(1, Ordering::Relaxed);
-        }
-        metric.sum.fetch_add(v, Ordering::Relaxed);
-        metric.count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// The bucket upper bounds, ascending, excluding the implicit `+Inf`
-    /// bucket. Shared by every series in the collection, including sinks.
-    pub fn bounds(&self) -> &'static [u64] {
-        self.bounds
-    }
-
-    /// The non-cumulative count for bucket `i`, or zero if this is a sink.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `i` is not a finite bucket index.
-    pub fn bucket(&self, i: usize) -> u64 {
-        assert!(
-            i < self.bounds.len(),
-            "embeprom: histogram bucket index out of range"
-        );
-        self.metric
-            .map_or(0, |metric| metric.buckets[i].load(Ordering::Relaxed))
-    }
-
-    /// Total number of observations (equal to the cumulative `+Inf` bucket),
-    /// or zero if this is a sink.
-    pub fn count(&self) -> u64 {
-        self.metric
-            .map_or(0, |metric| metric.count.load(Ordering::Relaxed))
-    }
-
-    /// Sum of all observed values, or zero if this is a sink.
-    pub fn sum(&self) -> u64 {
-        self.metric
-            .map_or(0, |metric| metric.sum.load(Ordering::Relaxed))
-    }
-}
-
 /// A labeled histogram collection over `u64` observations, with at most `N`
 /// distinct label-value combinations, `B` finite buckets shared by all
 /// series, `K` label names, and a rendered label-block byte budget `V`.
@@ -700,107 +605,6 @@ impl<const N: usize, const B: usize, const K: usize, const V: usize> ErasedHisto
                 count: self.counts[s].load(Ordering::Relaxed),
             })
         })
-    }
-}
-
-#[cfg(feature = "float")]
-#[derive(Clone, Copy)]
-struct HistMetric<'a> {
-    buckets: &'a [AtomicU64],
-    sum: &'a portable_atomic::AtomicF64,
-    count: &'a AtomicU64,
-}
-
-/// An infallible, reusable handle to one [`HistogramVec`] series, returned by
-/// [`HistogramVec::with`]. Retaining this handle avoids later label-map
-/// lookups. A rejected binding produces an unrendered sink whose observations
-/// are no-ops and whose reads return zero.
-#[cfg(feature = "float")]
-#[derive(Clone, Copy)]
-pub struct HistSeries<'a> {
-    bounds: &'static [f64],
-    metric: Option<HistMetric<'a>>,
-}
-
-#[cfg(feature = "float")]
-impl<'a> HistSeries<'a> {
-    fn bound(
-        bounds: &'static [f64],
-        buckets: &'a [AtomicU64],
-        sum: &'a portable_atomic::AtomicF64,
-        count: &'a AtomicU64,
-    ) -> Self {
-        Self {
-            bounds,
-            metric: Some(HistMetric {
-                buckets,
-                sum,
-                count,
-            }),
-        }
-    }
-
-    const fn sink(bounds: &'static [f64]) -> Self {
-        Self {
-            bounds,
-            metric: None,
-        }
-    }
-
-    /// Record an observation, or do nothing if this is a sink. With
-    /// `consistent-histograms`, real-series observations are serialized so a
-    /// concurrent renderer can take a coherent snapshot.
-    #[inline]
-    pub fn observe(&self, v: f64) {
-        let Some(metric) = self.metric else {
-            return;
-        };
-        #[cfg(feature = "consistent-histograms")]
-        critical_section::with(|_cs| Self::observe_inner(self.bounds, metric, v));
-        #[cfg(not(feature = "consistent-histograms"))]
-        Self::observe_inner(self.bounds, metric, v);
-    }
-
-    #[inline]
-    fn observe_inner(bounds: &[f64], metric: HistMetric<'_>, v: f64) {
-        if let Some(i) = bounds.iter().position(|bound| v <= *bound) {
-            metric.buckets[i].fetch_add(1, Ordering::Relaxed);
-        }
-        metric.sum.fetch_add(v, Ordering::Relaxed);
-        metric.count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// The bucket upper bounds, ascending, excluding the implicit `+Inf`
-    /// bucket. Shared by every series in the collection, including sinks.
-    pub fn bounds(&self) -> &'static [f64] {
-        self.bounds
-    }
-
-    /// The non-cumulative count for bucket `i`, or zero if this is a sink.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `i` is not a finite bucket index.
-    pub fn bucket(&self, i: usize) -> u64 {
-        assert!(
-            i < self.bounds.len(),
-            "embeprom: histogram bucket index out of range"
-        );
-        self.metric
-            .map_or(0, |metric| metric.buckets[i].load(Ordering::Relaxed))
-    }
-
-    /// Total number of observations (equal to the cumulative `+Inf` bucket),
-    /// or zero if this is a sink.
-    pub fn count(&self) -> u64 {
-        self.metric
-            .map_or(0, |metric| metric.count.load(Ordering::Relaxed))
-    }
-
-    /// Sum of all observed values, or zero if this is a sink.
-    pub fn sum(&self) -> f64 {
-        self.metric
-            .map_or(0.0, |metric| metric.sum.load(Ordering::Relaxed))
     }
 }
 
@@ -926,6 +730,9 @@ impl<const N: usize, const B: usize, const K: usize, const V: usize> ErasedHisto
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "float")]
+    use crate::histogram::Histogram;
+    use crate::histogram::IntHistogram;
 
     static REASON: [&str; 1] = ["reason"];
     static PEER: [&str; 1] = ["peer"];
@@ -1079,6 +886,28 @@ mod tests {
         assert_eq!(ap2.sum(), 2000);
     }
 
+    fn observe_us<'a>(metric: impl Into<IntHistSeries<'a>>, v: u64) {
+        metric.into().observe(v);
+    }
+
+    #[test]
+    fn scalar_histogram_series_is_the_same_handle_as_a_bound_vec_series() {
+        let scalar = IntHistogram::<2>::new(&[100, 1000]);
+        let labeled: IntHistogramVec<4, 2> = IntHistogramVec::new(&PEER, &[100, 1000]);
+
+        observe_us(&scalar, 50);
+        observe_us(scalar.series(), 500);
+        observe_us(labeled.with(&["ap-1"]), 50);
+
+        assert_eq!(scalar.bucket(0), 1);
+        assert_eq!(scalar.bucket(1), 1);
+        assert_eq!(scalar.count(), 2);
+        assert_eq!(scalar.sum(), 550);
+        assert_eq!(scalar.series().sum(), 550);
+        assert_eq!(labeled.with(&["ap-1"]).count(), 1);
+        assert_eq!(labeled.with(&["ap-1"]).sum(), 50);
+    }
+
     #[test]
     fn cached_histogram_series_can_be_reused_for_hot_path_observations() {
         let hv: IntHistogramVec<4, 2> = IntHistogramVec::new(&PEER, &[100, 1000]);
@@ -1128,6 +957,24 @@ mod tests {
     #[should_panic(expected = "histogram vectors require at least one label")]
     fn int_histogram_vec_requires_at_least_one_label() {
         let _ = IntHistogramVec::<1, 1, 0>::new(&[], &[100]);
+    }
+
+    #[cfg(feature = "float")]
+    #[test]
+    fn float_histogram_series_is_the_same_handle_as_a_bound_vec_series() {
+        fn observe<'a>(metric: impl Into<HistSeries<'a>>, v: f64) {
+            metric.into().observe(v);
+        }
+
+        let scalar = Histogram::<2>::new(&[0.5, 5.0]);
+        let labeled: HistogramVec<4, 2> = HistogramVec::new(&PEER, &[0.5, 5.0]);
+
+        observe(&scalar, 0.25);
+        observe(labeled.with(&["ap-1"]), 2.0);
+
+        assert_eq!(scalar.count(), 1);
+        assert_eq!(labeled.with(&["ap-1"]).count(), 1);
+        assert_eq!(labeled.with(&["ap-1"]).sum().to_bits(), 2.0_f64.to_bits());
     }
 
     #[cfg(feature = "float")]

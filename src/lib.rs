@@ -201,6 +201,11 @@
 //! handles are readable the same way as the corresponding scalar types
 //! (`get` on counters/gauges; `bounds` / `bucket` / `count` / `sum` on
 //! histograms). Sink handles read as zero.
+//!
+//! [`IntHistogram::series`] and [`IntHistogramVec::with`] both return
+//! [`IntHistSeries`] (and the same for the `float` histogram types), so a
+//! helper can take `impl Into<IntHistSeries<'a>>` and accept either an
+//! unlabeled histogram or a bound labeled series.
 
 mod config;
 mod counter;
@@ -212,6 +217,7 @@ mod labels;
 mod macros;
 mod registry;
 mod render;
+mod series;
 mod value;
 mod vec;
 
@@ -229,12 +235,15 @@ pub use gauge::Gauge;
 pub use histogram::IntHistogram;
 pub use registry::{GroupSnapshot, OnceRegister, Registry, RegistryFull, register, snapshot};
 pub use render::{CONTENT_TYPE, RenderError, Renderer, write_all};
+pub use series::IntHistSeries;
 pub use value::Value;
-pub use vec::{CounterSeries, CounterVec, GaugeSeries, GaugeVec, IntHistSeries, IntHistogramVec};
+pub use vec::{CounterSeries, CounterVec, GaugeSeries, GaugeVec, IntHistogramVec};
 
 #[cfg(feature = "float")]
 pub use gauge::GaugeF64;
 #[cfg(feature = "float")]
 pub use histogram::Histogram;
 #[cfg(feature = "float")]
-pub use vec::{GaugeF64Series, GaugeF64Vec, HistSeries, HistogramVec};
+pub use series::HistSeries;
+#[cfg(feature = "float")]
+pub use vec::{GaugeF64Series, GaugeF64Vec, HistogramVec};

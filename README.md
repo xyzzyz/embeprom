@@ -137,6 +137,7 @@ fight one of them.
 | Module | Role |
 |---|---|
 | `counter.rs`, `gauge.rs`, `histogram.rs` | Scalar metric storage — thin wrappers over `portable_atomic` atomics. |
+| `series.rs` | Borrowed histogram series handles (`IntHistSeries`, `HistSeries`) shared by scalars and vecs. |
 | `labels.rs`, `vec.rs` | Labeled metric collections (`CounterVec` etc.) — the const-generic-bounded, critical-section-guarded label→slot map. |
 | `erased.rs` | The `MetricGroup`/`MetricRef`/`MetricDesc` object-safe traits used for dynamic dispatch — the seam between "a crate's concrete metrics struct" and "the renderer that doesn't know about it." |
 | `registry.rs` | The fixed-capacity global registry, plus `OnceRegister` for lazy self-registration. |
