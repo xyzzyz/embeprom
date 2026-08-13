@@ -188,7 +188,8 @@ workaround.
 
 **Atomics are the default; `critical_section` is reserved for genuinely
 compound operations.** Every scalar update (`Counter::inc`, `Gauge::set`,
-and each histogram bucket/sum/count individually) is a single atomic op.
+and each histogram bucket/sum/count individually) is expressed as a single
+atomic op. Whether that operation is native or lock-backed is target-dependent.
 `critical_section::with` normally appears only where an operation is
 inherently compound: label-slot lookup-or-insert and registry
 mutation/snapshot. The optional `consistent-histograms` feature also treats
@@ -212,10 +213,11 @@ never appear in a scrape.
 **Int/float metric types are split on purpose.** `Counter` is always `u64`;
 `Gauge`/`Histogram` have separate `GaugeF64`/`GaugeF64Vec`/`Histogram<B>` (float) and
 integer-backed defaults, gated behind the `float` feature. This isn't
-parity with the Prometheus wire format (which is float64-only) — it's that
-`u64`/`i64` atomics are native on Cortex-M while `f64` atomics need a
-CAS-retry loop, and embedded counters (packet counts, byte counts) are
-naturally integral and want the cheaper, exact path.
+parity with the Prometheus wire format (which is float64-only): embedded
+counters are naturally integral and retain exact integer values internally,
+while floating-point updates require a CAS-retry loop. Native 64-bit atomics
+are not available on every Cortex-M target; see the interrupt-safety warning
+below for the consequences of the lock-backed fallback.
 
 **Testing has to substitute for hardware-in-the-loop.** There's no CI rig
 with real Cortex-M boards, so "works" is established by: unit tests on host
@@ -238,20 +240,46 @@ section of the crate docs for the full example.
 | Feature | Effect |
 |---|---|
 | `float` (default) | `f64`-backed `GaugeF64`, `GaugeF64Vec`, `Histogram`, `HistogramVec`. Disable on firmware that never needs floats to skip `f64` atomics/formatting. |
-| `cs-atomics` | Route 64-bit atomics through `critical-section` instead of native CAS. Required on targets without 64-bit atomic CAS, e.g. `thumbv6m-none-eabi` (Cortex-M0). |
+| `cs-atomics` | Supply atomic compare-and-swap through `critical-section` on targets that lack pointer-width CAS, e.g. `thumbv6m-none-eabi` (Cortex-M0). This does not replace the lock-backed 64-bit fallback on targets such as `thumbv7em-none-eabihf`; see below. |
 | `consistent-histograms` | Serialize scalar and vector histogram observations, then copy each series into renderer-owned scratch under one brief critical section. All `_bucket`/`_sum`/`_count` lines come from that immutable snapshot; scratch defaults to `MAX_HISTOGRAM_BUCKETS` finite buckets and is tunable per renderer. |
 | `log` | Log via the `log` crate (once per metric group, not per write) if a group fails to self-register because the registry is full. |
 | `std` | Pull in `critical-section`'s `std` backend; mainly useful for host-side testing. |
 | `label-value-{64,128}` | Increase the default 48-byte rendered label-block budget crate-wide. Feature unification selects the largest enabled value; per-metric capacities use the vec types' const generics or macro attribute `#[label_bytes(24)]`. |
 | `max-groups-{32,64,128,256,512}` | Increase the default 16-group global registry capacity. Feature unification selects the largest enabled value; smaller applications can install a caller-owned `Registry<N>`. |
 
+## Interrupt-context safety
+
+> **Warning:** metric access is not interrupt-safe on targets that have
+> pointer-width atomic compare-and-swap but lack native 64-bit atomics.
+
+On those targets, `portable-atomic` implements the `u64`, `i64`, and `f64`
+storage used by metrics with global locks. `thumbv7em-none-eabihf` is one
+affected target. If foreground code is preempted while it holds one of those
+locks and an interrupt handler accesses the same metric — or another metric
+mapped to the same fallback lock — the interrupt handler spins forever while
+the foreground code cannot resume to release the lock.
+
+The `cs-atomics` feature does not fix this case: it supplies CAS on targets
+that lack CAS, such as `thumbv6m-none-eabi`, but does not redirect the 64-bit
+global-lock fallback on a target that already has pointer-width CAS. Likewise,
+`consistent-histograms` is not a general workaround for counters and gauges.
+No `embeprom` feature currently removes this restriction on affected targets.
+
+Until the storage implementation changes, do not access or render metrics
+from an interrupt handler on an affected target when foreground code can also
+access metrics. The upstream
+[`portable-atomic` documentation](https://docs.rs/portable-atomic/latest/portable_atomic/)
+describes the fallback choices and the system-level requirements of its
+interrupt-disabling alternatives.
+
 ## `no_std` / embedded support
 
 Builds and links on real Cortex-M targets with `#![forbid(unsafe_code)]`
-throughout. Verified against `thumbv7em-none-eabihf` (native 64-bit CAS) and
-`thumbv6m-none-eabi` (via `cs-atomics`) — see `examples/no_std_check` for a
-minimal `cortex-m-rt` binary exercising declaration, recording, and
-rendering end to end.
+throughout. Verified against `thumbv7em-none-eabihf` (lock-backed 64-bit
+atomics, subject to the interrupt-context restriction above) and
+`thumbv6m-none-eabi` (CAS supplied via `cs-atomics`) — see
+`examples/no_std_check` for a minimal `cortex-m-rt` binary exercising
+declaration, recording, and rendering end to end.
 
 MSRV: 1.87 (floor set by the `heapless` dependency).
 

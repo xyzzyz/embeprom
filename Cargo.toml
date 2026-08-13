@@ -35,7 +35,9 @@ default = ["float"]
 # f64 gauges/histograms (GaugeF64, GaugeF64Vec, Histogram). Pulls in AtomicF64 and f64 Display.
 float = ["portable-atomic/float"]
 
-# Targets without native CAS / 64-bit atomics (e.g. thumbv6m-none-eabi).
+# Supply CAS through critical-section on targets without pointer-width CAS
+# (e.g. thumbv6m-none-eabi). This does not replace the lock-backed wide-atomic
+# fallback on targets that have pointer CAS but lack native 64-bit atomics.
 cs-atomics = ["portable-atomic/critical-section"]
 
 # Serialize histogram observations and take coherent renderer snapshots.
