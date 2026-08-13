@@ -401,19 +401,25 @@ impl GaugeF64Series<'_> {
     /// Subtract `delta` from this series, or do nothing if it is a sink.
     #[inline]
     pub fn sub(&self, delta: f64) {
-        self.add(-delta);
+        if let Some(gauge) = self.gauge {
+            gauge.sub(delta);
+        }
     }
 
     /// Increment this series by 1, or do nothing if it is a sink.
     #[inline]
     pub fn inc(&self) {
-        self.add(1.0);
+        if let Some(gauge) = self.gauge {
+            gauge.inc();
+        }
     }
 
     /// Decrement this series by 1, or do nothing if it is a sink.
     #[inline]
     pub fn dec(&self) {
-        self.add(-1.0);
+        if let Some(gauge) = self.gauge {
+            gauge.dec();
+        }
     }
 
     /// Return the current value, or zero if this is a sink.
