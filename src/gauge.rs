@@ -85,6 +85,24 @@ impl GaugeF64 {
         self.v.fetch_add(d, Ordering::Relaxed);
     }
 
+    /// Subtract `d` from the value. Implemented as a CAS loop.
+    #[inline]
+    pub fn sub(&self, d: f64) {
+        self.v.fetch_sub(d, Ordering::Relaxed);
+    }
+
+    /// Increment by 1.
+    #[inline]
+    pub fn inc(&self) {
+        self.add(1.0);
+    }
+
+    /// Decrement by 1.
+    #[inline]
+    pub fn dec(&self) {
+        self.sub(1.0);
+    }
+
     /// The current value.
     #[inline]
     pub fn get(&self) -> f64 {
@@ -119,7 +137,10 @@ mod tests {
     fn gauge_f64_moves_up_and_down() {
         let g = GaugeF64::new(0.0);
         g.set(1.5);
+        g.inc();
         g.add(0.5);
-        assert_eq!(g.get().to_bits(), 2.0_f64.to_bits());
+        g.dec();
+        g.sub(0.25);
+        assert_eq!(g.get().to_bits(), 1.75_f64.to_bits());
     }
 }

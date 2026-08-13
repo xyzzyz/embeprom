@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `IntHistogram::series` / `Histogram::series` return the same handle type as
   the corresponding `*HistogramVec::with`, so helpers can take
   `impl Into<IntHistSeries<'a>>` (or `HistSeries`) and accept either.
+- `GaugeF64` now has `sub` / `inc` / `dec`, matching `Gauge`.
+- `RegistryFull` implements `Display` and `core::error::Error`.
 
 ### Changed
 
