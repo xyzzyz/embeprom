@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-12
+
 ### Added
 
 - `GaugeF64Vec` / `GaugeF64Series` for labeled `f64` gauges (feature `float`),
@@ -26,11 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Histogram series handles live in `series` rather than `vec`. Crate-root
   names (`IntHistSeries`, `HistSeries`) are unchanged.
+- Document the interrupt-context deadlock restriction on targets with
+  pointer-width compare-and-swap but no native 64-bit atomics, and correct the
+  descriptions of the Cortex-M atomic fallbacks.
 
 ### Fixed
 
 - `IntHistogramVec` and `HistogramVec` now reject `K = 0` at construction, so
   unlabeled histograms cannot emit invalid `{,le="..."}` label sets.
+- Crate documentation now builds without the default `float` feature.
 
 ## [0.1.0] - 2026-08-05
 
@@ -44,5 +50,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional floating-point metrics, critical-section atomics, coherent
   histogram snapshots, logging, and capacity features.
 
-[Unreleased]: https://github.com/xyzzyz/embeprom/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/xyzzyz/embeprom/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/xyzzyz/embeprom/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/xyzzyz/embeprom/releases/tag/v0.1.0
