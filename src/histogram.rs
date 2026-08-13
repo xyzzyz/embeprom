@@ -5,10 +5,10 @@ use portable_atomic::{AtomicU64, Ordering};
 use crate::erased::ErasedHistogram;
 #[cfg(feature = "consistent-histograms")]
 use crate::erased::{HistogramSnapshot, HistogramSnapshotError, snapshot_bucket_prefix};
-use crate::value::Value;
 #[cfg(feature = "float")]
-use crate::vec::HistSeries;
-use crate::vec::IntHistSeries;
+use crate::series::HistSeries;
+use crate::series::IntHistSeries;
+use crate::value::Value;
 
 pub(crate) const fn validate_u64_bounds<const B: usize>(bounds: &[u64]) {
     assert!(

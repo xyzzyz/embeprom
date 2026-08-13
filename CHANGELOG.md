@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the corresponding `*HistogramVec::with`, so helpers can take
   `impl Into<IntHistSeries<'a>>` (or `HistSeries`) and accept either.
 
+### Changed
+
+- Histogram series handles live in `series` rather than `vec`. Crate-root
+  names (`IntHistSeries`, `HistSeries`) are unchanged.
+
 ### Fixed
 
 - `IntHistogramVec` and `HistogramVec` now reject `K = 0` at construction, so
