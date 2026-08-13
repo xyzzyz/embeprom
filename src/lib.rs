@@ -197,7 +197,10 @@
 //! its series handle. Updating that handle accesses the metric storage
 //! directly, avoiding repeated label construction and label-map lookup. The
 //! convenience methods that accept label values perform a lookup on every
-//! call and are best reserved for dynamic or infrequent labels.
+//! call and are best reserved for dynamic or infrequent labels. Bound series
+//! handles are readable the same way as the corresponding scalar types
+//! (`get` on counters/gauges; `bounds` / `bucket` / `count` / `sum` on
+//! histograms). Sink handles read as zero.
 
 mod config;
 mod counter;
