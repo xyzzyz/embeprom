@@ -32,7 +32,7 @@ critical-section = { version = "1.2", features = ["std"] }
 [features]
 default = ["float"]
 
-# f64 gauges/histograms (GaugeF64, Histogram). Pulls in AtomicF64 and f64 Display.
+# f64 gauges/histograms (GaugeF64, GaugeF64Vec, Histogram). Pulls in AtomicF64 and f64 Display.
 float = ["portable-atomic/float"]
 
 # Targets without native CAS / 64-bit atomics (e.g. thumbv6m-none-eabi).

@@ -186,7 +186,7 @@
 //! # Labeled metrics and cardinality
 //!
 //! [`CounterVec`], [`GaugeVec`], [`IntHistogramVec`] (and, with the `float`
-//! feature, [`HistogramVec`]) each declare a maximum number of distinct
+//! feature, [`GaugeF64Vec`] and [`HistogramVec`]) each declare a maximum number of distinct
 //! label-value combinations via a const generic (e.g. `CounterVec<4>` for up
 //! to 4 series). Once that capacity is exhausted, newly observed label
 //! combinations are silently routed to unrendered sink handles whose updates
@@ -234,4 +234,4 @@ pub use gauge::GaugeF64;
 #[cfg(feature = "float")]
 pub use histogram::Histogram;
 #[cfg(feature = "float")]
-pub use vec::{HistSeries, HistogramVec};
+pub use vec::{GaugeF64Series, GaugeF64Vec, HistSeries, HistogramVec};

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `GaugeF64Vec` / `GaugeF64Series` for labeled `f64` gauges (feature `float`),
+  including `metrics!` `GaugeF64Vec<N>` support.
+
+### Fixed
+
+- `IntHistogramVec` and `HistogramVec` now reject `K = 0` at construction, so
+  unlabeled histograms cannot emit invalid `{,le="..."}` label sets.
+
 ## [0.1.0] - 2026-08-05
 
 ### Added
