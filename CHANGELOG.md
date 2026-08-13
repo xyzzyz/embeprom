@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `GaugeF64Vec` / `GaugeF64Series` for labeled `f64` gauges (feature `float`),
   including `metrics!` `GaugeF64Vec<N>` support.
+- `bounds` / `bucket` / `count` / `sum` on `IntHistSeries` and `HistSeries`,
+  matching the scalar histogram read API. Histogram vectors also expose
+  `bounds()`.
 
 ### Fixed
 
