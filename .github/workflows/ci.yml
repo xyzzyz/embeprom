@@ -3,12 +3,15 @@ name: CI
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  push:
+    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -25,6 +28,8 @@ jobs:
         run: rustup toolchain install stable --profile minimal --component rustfmt
       - name: Check formatting
         run: cargo +stable fmt --all -- --check
+      - name: Check embedded example formatting
+        run: cargo +stable fmt --manifest-path examples/no_std_check/Cargo.toml -- --check
 
   test:
     name: Test
@@ -38,6 +43,55 @@ jobs:
         run: cargo +stable test --locked --all-features
       - name: Test without default features
         run: cargo +stable test --locked --no-default-features
+      - name: Test coherent histograms without floats
+        run: cargo +stable test --locked --no-default-features --features consistent-histograms
+      - name: Test critical-section atomics without floats
+        run: cargo +stable test --locked --no-default-features --features cs-atomics
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Build all-feature documentation
+        run: cargo +stable doc --locked --all-features --no-deps
+      - name: Build minimal documentation
+        run: cargo +stable doc --locked --no-default-features --no-deps
+
+  msrv:
+    name: MSRV (1.87.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust 1.87.0
+        run: rustup toolchain install 1.87.0 --profile minimal
+      - name: Check all features
+        run: cargo +1.87.0 check --locked --all-features
+      - name: Check without default features
+        run: cargo +1.87.0 check --locked --no-default-features
+
+  embedded:
+    name: Cortex-M link
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Install Cortex-M targets
+        run: rustup target add --toolchain stable thumbv7em-none-eabihf thumbv6m-none-eabi
+      - name: Link Cortex-M7 example
+        working-directory: examples/no_std_check
+        run: cargo +stable build --locked --target thumbv7em-none-eabihf
+      - name: Link Cortex-M0 example
+        working-directory: examples/no_std_check
+        run: cargo +stable build --locked --target thumbv6m-none-eabi
 
   clippy:
     name: Clippy
