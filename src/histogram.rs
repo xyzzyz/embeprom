@@ -47,6 +47,9 @@ pub(crate) const fn validate_f64_bounds<const B: usize>(bounds: &[f64]) {
 /// A Prometheus histogram over `u64` observations, with `B` finite buckets
 /// plus an implicit `+Inf` bucket (represented by `count`).
 ///
+/// [`Self::series`] returns the same handle type as
+/// [`crate::IntHistogramVec::with`].
+///
 /// Bucket counts are stored non-cumulatively and accumulated with one rolling
 /// total at render time. Each finite bucket is read once, so both observation
 /// and rendering are linear scans with `observe` performing exactly 3 atomic
@@ -124,6 +127,10 @@ impl<const B: usize> IntHistogram<B> {
     /// Sum of all observed values.
     pub fn sum(&self) -> u64 {
         self.sum.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn series_parts(&self) -> (&'static [u64], &[AtomicU64], &AtomicU64, &AtomicU64) {
+        (self.bounds, &self.buckets, &self.sum, &self.count)
     }
 }
 
@@ -234,6 +241,17 @@ impl<const B: usize> Histogram<B> {
     /// Sum of all observed values.
     pub fn sum(&self) -> f64 {
         self.sum.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn series_parts(
+        &self,
+    ) -> (
+        &'static [f64],
+        &[AtomicU64],
+        &portable_atomic::AtomicF64,
+        &AtomicU64,
+    ) {
+        (self.bounds, &self.buckets, &self.sum, &self.count)
     }
 }
 

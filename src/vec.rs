@@ -25,8 +25,10 @@ use crate::gauge::Gauge;
 #[cfg(feature = "float")]
 use crate::gauge::GaugeF64;
 #[cfg(feature = "float")]
+use crate::histogram::Histogram;
+#[cfg(feature = "float")]
 use crate::histogram::validate_f64_bounds;
-use crate::histogram::validate_u64_bounds;
+use crate::histogram::{IntHistogram, validate_u64_bounds};
 use crate::labels::{LabelBlock, build_block};
 use crate::value::Value;
 
@@ -495,10 +497,12 @@ struct IntHistMetric<'a> {
     count: &'a AtomicU64,
 }
 
-/// An infallible, reusable handle to one [`IntHistogramVec`] series, returned
-/// by [`IntHistogramVec::with`]. Retaining this handle avoids later label-map
-/// lookups. A rejected binding produces an unrendered sink whose observations
-/// are no-ops and whose reads return zero.
+/// An infallible, reusable handle to one histogram series.
+///
+/// Returned by [`IntHistogram::series`] and [`IntHistogramVec::with`].
+/// Retaining this handle avoids later label-map lookups. A rejected labeled
+/// binding produces an unrendered sink whose observations are no-ops and
+/// whose reads return zero.
 #[derive(Clone, Copy)]
 pub struct IntHistSeries<'a> {
     bounds: &'static [u64],
@@ -583,6 +587,37 @@ impl<'a> IntHistSeries<'a> {
     pub fn sum(&self) -> u64 {
         self.metric
             .map_or(0, |metric| metric.sum.load(Ordering::Relaxed))
+    }
+}
+
+impl<const B: usize> IntHistogram<B> {
+    /// A series handle for this histogram. Same type as
+    /// [`IntHistogramVec::with`], so one helper can accept both an unlabeled
+    /// histogram and a bound labeled series.
+    ///
+    /// ```
+    /// fn observe_us<'a>(metric: impl Into<embeprom::IntHistSeries<'a>>, v: u64) {
+    ///     metric.into().observe(v);
+    /// }
+    ///
+    /// let scalar = embeprom::IntHistogram::<2>::new(&[100, 1000]);
+    /// static PEER: [&str; 1] = ["peer"];
+    /// let labeled = embeprom::IntHistogramVec::<4, 2>::new(&PEER, &[100, 1000]);
+    ///
+    /// observe_us(&scalar, 50);
+    /// observe_us(labeled.with(&["ap-1"]), 50);
+    /// assert_eq!(scalar.count(), 1);
+    /// assert_eq!(labeled.with(&["ap-1"]).count(), 1);
+    /// ```
+    pub fn series(&self) -> IntHistSeries<'_> {
+        let (bounds, buckets, sum, count) = self.series_parts();
+        IntHistSeries::bound(bounds, buckets, sum, count)
+    }
+}
+
+impl<'a, const B: usize> From<&'a IntHistogram<B>> for IntHistSeries<'a> {
+    fn from(histogram: &'a IntHistogram<B>) -> Self {
+        histogram.series()
     }
 }
 
@@ -711,10 +746,12 @@ struct HistMetric<'a> {
     count: &'a AtomicU64,
 }
 
-/// An infallible, reusable handle to one [`HistogramVec`] series, returned by
-/// [`HistogramVec::with`]. Retaining this handle avoids later label-map
-/// lookups. A rejected binding produces an unrendered sink whose observations
-/// are no-ops and whose reads return zero.
+/// An infallible, reusable handle to one floating-point histogram series.
+///
+/// Returned by [`Histogram::series`] and [`HistogramVec::with`]. Retaining
+/// this handle avoids later label-map lookups. A rejected labeled binding
+/// produces an unrendered sink whose observations are no-ops and whose reads
+/// return zero.
 #[cfg(feature = "float")]
 #[derive(Clone, Copy)]
 pub struct HistSeries<'a> {
@@ -801,6 +838,22 @@ impl<'a> HistSeries<'a> {
     pub fn sum(&self) -> f64 {
         self.metric
             .map_or(0.0, |metric| metric.sum.load(Ordering::Relaxed))
+    }
+}
+
+#[cfg(feature = "float")]
+impl<const B: usize> Histogram<B> {
+    /// A series handle for this histogram. Same type as [`HistogramVec::with`].
+    pub fn series(&self) -> HistSeries<'_> {
+        let (bounds, buckets, sum, count) = self.series_parts();
+        HistSeries::bound(bounds, buckets, sum, count)
+    }
+}
+
+#[cfg(feature = "float")]
+impl<'a, const B: usize> From<&'a Histogram<B>> for HistSeries<'a> {
+    fn from(histogram: &'a Histogram<B>) -> Self {
+        histogram.series()
     }
 }
 
@@ -1079,6 +1132,28 @@ mod tests {
         assert_eq!(ap2.sum(), 2000);
     }
 
+    fn observe_us<'a>(metric: impl Into<IntHistSeries<'a>>, v: u64) {
+        metric.into().observe(v);
+    }
+
+    #[test]
+    fn scalar_histogram_series_is_the_same_handle_as_a_bound_vec_series() {
+        let scalar = IntHistogram::<2>::new(&[100, 1000]);
+        let labeled: IntHistogramVec<4, 2> = IntHistogramVec::new(&PEER, &[100, 1000]);
+
+        observe_us(&scalar, 50);
+        observe_us(scalar.series(), 500);
+        observe_us(labeled.with(&["ap-1"]), 50);
+
+        assert_eq!(scalar.bucket(0), 1);
+        assert_eq!(scalar.bucket(1), 1);
+        assert_eq!(scalar.count(), 2);
+        assert_eq!(scalar.sum(), 550);
+        assert_eq!(scalar.series().sum(), 550);
+        assert_eq!(labeled.with(&["ap-1"]).count(), 1);
+        assert_eq!(labeled.with(&["ap-1"]).sum(), 50);
+    }
+
     #[test]
     fn cached_histogram_series_can_be_reused_for_hot_path_observations() {
         let hv: IntHistogramVec<4, 2> = IntHistogramVec::new(&PEER, &[100, 1000]);
@@ -1128,6 +1203,24 @@ mod tests {
     #[should_panic(expected = "histogram vectors require at least one label")]
     fn int_histogram_vec_requires_at_least_one_label() {
         let _ = IntHistogramVec::<1, 1, 0>::new(&[], &[100]);
+    }
+
+    #[cfg(feature = "float")]
+    #[test]
+    fn float_histogram_series_is_the_same_handle_as_a_bound_vec_series() {
+        fn observe<'a>(metric: impl Into<HistSeries<'a>>, v: f64) {
+            metric.into().observe(v);
+        }
+
+        let scalar = Histogram::<2>::new(&[0.5, 5.0]);
+        let labeled: HistogramVec<4, 2> = HistogramVec::new(&PEER, &[0.5, 5.0]);
+
+        observe(&scalar, 0.25);
+        observe(labeled.with(&["ap-1"]), 2.0);
+
+        assert_eq!(scalar.count(), 1);
+        assert_eq!(labeled.with(&["ap-1"]).count(), 1);
+        assert_eq!(labeled.with(&["ap-1"]).sum().to_bits(), 2.0_f64.to_bits());
     }
 
     #[cfg(feature = "float")]

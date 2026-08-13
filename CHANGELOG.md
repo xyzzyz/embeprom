@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bounds` / `bucket` / `count` / `sum` on `IntHistSeries` and `HistSeries`,
   matching the scalar histogram read API. Histogram vectors also expose
   `bounds()`.
+- `IntHistogram::series` / `Histogram::series` return the same handle type as
+  the corresponding `*HistogramVec::with`, so helpers can take
+  `impl Into<IntHistSeries<'a>>` (or `HistSeries`) and accept either.
 
 ### Fixed
 

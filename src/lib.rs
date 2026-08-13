@@ -201,6 +201,11 @@
 //! handles are readable the same way as the corresponding scalar types
 //! (`get` on counters/gauges; `bounds` / `bucket` / `count` / `sum` on
 //! histograms). Sink handles read as zero.
+//!
+//! [`IntHistogram::series`] and [`IntHistogramVec::with`] both return
+//! [`IntHistSeries`] (and the same for the `float` histogram types), so a
+//! helper can take `impl Into<IntHistSeries<'a>>` and accept either an
+//! unlabeled histogram or a bound labeled series.
 
 mod config;
 mod counter;
