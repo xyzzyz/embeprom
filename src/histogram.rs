@@ -6,6 +6,9 @@ use crate::erased::ErasedHistogram;
 #[cfg(feature = "consistent-histograms")]
 use crate::erased::{HistogramSnapshot, HistogramSnapshotError, snapshot_bucket_prefix};
 use crate::value::Value;
+#[cfg(feature = "float")]
+use crate::vec::HistSeries;
+use crate::vec::IntHistSeries;
 
 pub(crate) const fn validate_u64_bounds<const B: usize>(bounds: &[u64]) {
     assert!(
@@ -129,8 +132,32 @@ impl<const B: usize> IntHistogram<B> {
         self.sum.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn series_parts(&self) -> (&'static [u64], &[AtomicU64], &AtomicU64, &AtomicU64) {
-        (self.bounds, &self.buckets, &self.sum, &self.count)
+    /// A series handle for this histogram. Same type as
+    /// [`crate::IntHistogramVec::with`], so one helper can accept both an
+    /// unlabeled histogram and a bound labeled series.
+    ///
+    /// ```
+    /// fn observe_us<'a>(metric: impl Into<embeprom::IntHistSeries<'a>>, v: u64) {
+    ///     metric.into().observe(v);
+    /// }
+    ///
+    /// let scalar = embeprom::IntHistogram::<2>::new(&[100, 1000]);
+    /// static PEER: [&str; 1] = ["peer"];
+    /// let labeled = embeprom::IntHistogramVec::<4, 2>::new(&PEER, &[100, 1000]);
+    ///
+    /// observe_us(&scalar, 50);
+    /// observe_us(labeled.with(&["ap-1"]), 50);
+    /// assert_eq!(scalar.count(), 1);
+    /// assert_eq!(labeled.with(&["ap-1"]).count(), 1);
+    /// ```
+    pub fn series(&self) -> IntHistSeries<'_> {
+        IntHistSeries::bound(self.bounds, &self.buckets, &self.sum, &self.count)
+    }
+}
+
+impl<'a, const B: usize> From<&'a IntHistogram<B>> for IntHistSeries<'a> {
+    fn from(histogram: &'a IntHistogram<B>) -> Self {
+        histogram.series()
     }
 }
 
@@ -243,15 +270,16 @@ impl<const B: usize> Histogram<B> {
         self.sum.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn series_parts(
-        &self,
-    ) -> (
-        &'static [f64],
-        &[AtomicU64],
-        &portable_atomic::AtomicF64,
-        &AtomicU64,
-    ) {
-        (self.bounds, &self.buckets, &self.sum, &self.count)
+    /// A series handle for this histogram. Same type as [`crate::HistogramVec::with`].
+    pub fn series(&self) -> HistSeries<'_> {
+        HistSeries::bound(self.bounds, &self.buckets, &self.sum, &self.count)
+    }
+}
+
+#[cfg(feature = "float")]
+impl<'a, const B: usize> From<&'a Histogram<B>> for HistSeries<'a> {
+    fn from(histogram: &'a Histogram<B>) -> Self {
+        histogram.series()
     }
 }
 

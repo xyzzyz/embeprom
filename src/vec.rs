@@ -25,10 +25,8 @@ use crate::gauge::Gauge;
 #[cfg(feature = "float")]
 use crate::gauge::GaugeF64;
 #[cfg(feature = "float")]
-use crate::histogram::Histogram;
-#[cfg(feature = "float")]
 use crate::histogram::validate_f64_bounds;
-use crate::histogram::{IntHistogram, validate_u64_bounds};
+use crate::histogram::validate_u64_bounds;
 use crate::labels::{LabelBlock, build_block};
 use crate::value::Value;
 
@@ -510,7 +508,7 @@ pub struct IntHistSeries<'a> {
 }
 
 impl<'a> IntHistSeries<'a> {
-    fn bound(
+    pub(crate) fn bound(
         bounds: &'static [u64],
         buckets: &'a [AtomicU64],
         sum: &'a AtomicU64,
@@ -587,37 +585,6 @@ impl<'a> IntHistSeries<'a> {
     pub fn sum(&self) -> u64 {
         self.metric
             .map_or(0, |metric| metric.sum.load(Ordering::Relaxed))
-    }
-}
-
-impl<const B: usize> IntHistogram<B> {
-    /// A series handle for this histogram. Same type as
-    /// [`IntHistogramVec::with`], so one helper can accept both an unlabeled
-    /// histogram and a bound labeled series.
-    ///
-    /// ```
-    /// fn observe_us<'a>(metric: impl Into<embeprom::IntHistSeries<'a>>, v: u64) {
-    ///     metric.into().observe(v);
-    /// }
-    ///
-    /// let scalar = embeprom::IntHistogram::<2>::new(&[100, 1000]);
-    /// static PEER: [&str; 1] = ["peer"];
-    /// let labeled = embeprom::IntHistogramVec::<4, 2>::new(&PEER, &[100, 1000]);
-    ///
-    /// observe_us(&scalar, 50);
-    /// observe_us(labeled.with(&["ap-1"]), 50);
-    /// assert_eq!(scalar.count(), 1);
-    /// assert_eq!(labeled.with(&["ap-1"]).count(), 1);
-    /// ```
-    pub fn series(&self) -> IntHistSeries<'_> {
-        let (bounds, buckets, sum, count) = self.series_parts();
-        IntHistSeries::bound(bounds, buckets, sum, count)
-    }
-}
-
-impl<'a, const B: usize> From<&'a IntHistogram<B>> for IntHistSeries<'a> {
-    fn from(histogram: &'a IntHistogram<B>) -> Self {
-        histogram.series()
     }
 }
 
@@ -761,7 +728,7 @@ pub struct HistSeries<'a> {
 
 #[cfg(feature = "float")]
 impl<'a> HistSeries<'a> {
-    fn bound(
+    pub(crate) fn bound(
         bounds: &'static [f64],
         buckets: &'a [AtomicU64],
         sum: &'a portable_atomic::AtomicF64,
@@ -838,22 +805,6 @@ impl<'a> HistSeries<'a> {
     pub fn sum(&self) -> f64 {
         self.metric
             .map_or(0.0, |metric| metric.sum.load(Ordering::Relaxed))
-    }
-}
-
-#[cfg(feature = "float")]
-impl<const B: usize> Histogram<B> {
-    /// A series handle for this histogram. Same type as [`HistogramVec::with`].
-    pub fn series(&self) -> HistSeries<'_> {
-        let (bounds, buckets, sum, count) = self.series_parts();
-        HistSeries::bound(bounds, buckets, sum, count)
-    }
-}
-
-#[cfg(feature = "float")]
-impl<'a, const B: usize> From<&'a Histogram<B>> for HistSeries<'a> {
-    fn from(histogram: &'a Histogram<B>) -> Self {
-        histogram.series()
     }
 }
 
@@ -979,6 +930,9 @@ impl<const N: usize, const B: usize, const K: usize, const V: usize> ErasedHisto
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "float")]
+    use crate::histogram::Histogram;
+    use crate::histogram::IntHistogram;
 
     static REASON: [&str; 1] = ["reason"];
     static PEER: [&str; 1] = ["peer"];
