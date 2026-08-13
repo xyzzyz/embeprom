@@ -86,8 +86,8 @@
 /// ```
 ///
 /// Supported types are [`crate::Counter`], [`crate::Gauge`], `GaugeF64`
-/// (feature `float`), `CounterVec<N>`, `GaugeVec<N>`,
-/// [`crate::IntHistogram`], `Histogram` (feature `float`),
+/// (feature `float`), `CounterVec<N>`, `GaugeVec<N>`, `GaugeF64Vec<N>`
+/// (feature `float`), [`crate::IntHistogram`], `Histogram` (feature `float`),
 /// `IntHistogramVec<N>`, and `HistogramVec<N>` (feature `float`). Vec fields
 /// declare their label names with `#[labels("name", ...)]`; histogram fields
 /// declare finite bucket bounds with `#[buckets(10, 50, ...)]`. A vec can set
@@ -206,6 +206,20 @@ macro_rules! __embeprom_metrics_parse {
                 gauge_vec<$cap $(, label_bytes: $label_bytes)?> $field[$($label),+] = $help;]
             $($rest)*
         );
+    };
+    ([$($registration:tt)*] [$ns:literal] [$($metrics:tt)*]
+        #[doc = $help:literal] $(#[doc = $more_docs:literal])*
+        #[labels($($label:literal),+)]
+        $(#[label_bytes($label_bytes:literal)])?
+        $field:ident: GaugeF64Vec<$cap:literal>, $($rest:tt)*) => {
+        $crate::__embeprom_if_float! {
+            $crate::__embeprom_metrics_parse!(
+                [$($registration)*] [$ns]
+                [$($metrics)* #[doc = $help] $(#[doc = $more_docs])*
+                    gauge_f64_vec<$cap $(, label_bytes: $label_bytes)?> $field[$($label),+] = $help;]
+                $($rest)*
+            );
+        }
     };
 
     // Scalar histograms.
@@ -421,6 +435,12 @@ macro_rules! __embeprom_ty {
     (@ty gauge_vec, $cap:literal ; $($l:literal),+) => {
         $crate::GaugeVec<$cap, { $crate::__embeprom_count!($($l),+) }>
     };
+    (@ty gauge_f64_vec, $cap:literal, $label_bytes:literal ; $($l:literal),+) => {
+        $crate::GaugeF64Vec<$cap, { $crate::__embeprom_count!($($l),+) }, $label_bytes>
+    };
+    (@ty gauge_f64_vec, $cap:literal ; $($l:literal),+) => {
+        $crate::GaugeF64Vec<$cap, { $crate::__embeprom_count!($($l),+) }>
+    };
     (@ty int_histogram ; buckets: $($b:literal),+) => {
         $crate::IntHistogram<{ $crate::__embeprom_count!($($b),+) }>
     };
@@ -471,6 +491,9 @@ macro_rules! __embeprom_init {
     (@init gauge_vec, $_cap:literal $(, $_label_bytes:literal)? ; $($l:literal),+) => {
         $crate::GaugeVec::new(&[$($l),+])
     };
+    (@init gauge_f64_vec, $_cap:literal $(, $_label_bytes:literal)? ; $($l:literal),+) => {
+        $crate::GaugeF64Vec::new(&[$($l),+])
+    };
     (@init int_histogram ; buckets: $($b:literal),+) => {
         $crate::IntHistogram::new(&[$($b),+])
     };
@@ -501,6 +524,9 @@ macro_rules! __embeprom_ref {
         $crate::MetricRef::CounterVec(&$e)
     };
     (@ref gauge_vec ; $e:expr ; $($_label:literal),+) => {
+        $crate::MetricRef::GaugeVec(&$e)
+    };
+    (@ref gauge_f64_vec ; $e:expr ; $($_label:literal),+) => {
         $crate::MetricRef::GaugeVec(&$e)
     };
     (@ref int_histogram ; $e:expr ; buckets: $($_bucket:literal),+) => {
@@ -707,6 +733,10 @@ mod tests {
             /// Queue depth.
             #[labels("queue")]
             queue_depth: GaugeVec<4>,
+            /// Temperature by sensor.
+            #[labels("sensor")]
+            #[label_bytes(18)]
+            temp_c: GaugeF64Vec<4>,
             /// Per-peer RTT.
             #[labels("peer")]
             #[buckets(0.05, 0.5)]
@@ -722,15 +752,26 @@ mod tests {
         m.cpu_temp_c.set(42.5);
         m.request_latency_s.observe(0.05);
         m.queue_depth.set(&["ingress"], 3);
+        m.temp_c.set(&["cpu"], 36.5);
         m.peer_rtt_s.observe(&["ap-1"], 0.2);
 
         assert_eq!(m.cpu_temp_c.get().to_bits(), 42.5_f64.to_bits());
         assert_eq!(m.request_latency_s.count(), 1);
         assert_eq!(m.queue_depth.with(&["ingress"]).get(), 3);
+        assert_eq!(m.temp_c.with(&["cpu"]).get().to_bits(), 36.5_f64.to_bits());
+        let _: &crate::GaugeF64Vec<4, 1, 18> = &m.temp_c;
         let _: &crate::HistogramVec<4, 2, 1, 18> = &m.peer_rtt_s;
 
         let group: &dyn MetricGroup = m;
-        assert_eq!(group.len(), 4);
+        assert_eq!(group.len(), 5);
+
+        let registry = crate::Registry::<1>::new();
+        registry.register(m).unwrap();
+        let mut out = heapless::String::<2048>::new();
+        crate::Renderer::<1>::from_registry(&registry)
+            .render_to(&mut out)
+            .unwrap();
+        assert!(out.contains("temp_c{sensor=\"cpu\"} 36.5"));
     }
 
     mod literal_bucket_metrics {

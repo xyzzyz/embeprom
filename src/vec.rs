@@ -23,6 +23,8 @@ use crate::erased::{HistogramSnapshot, HistogramSnapshotError, snapshot_bucket_p
 use crate::escape::valid_label_name;
 use crate::gauge::Gauge;
 #[cfg(feature = "float")]
+use crate::gauge::GaugeF64;
+#[cfg(feature = "float")]
 use crate::histogram::validate_f64_bounds;
 use crate::histogram::validate_u64_bounds;
 use crate::labels::{LabelBlock, build_block};
@@ -47,6 +49,12 @@ const fn str_eq(a: &str, b: &str) -> bool {
 }
 
 const fn validate_label_names<const K: usize>(names: &'static [&'static str; K], histogram: bool) {
+    if histogram {
+        assert!(
+            K > 0,
+            "embeprom: histogram vectors require at least one label"
+        );
+    }
     let mut i = 0;
     while i < K {
         assert!(valid_label_name(names[i]), "embeprom: invalid label name");
@@ -351,6 +359,135 @@ impl<const N: usize, const K: usize, const V: usize> ErasedGaugeVec for GaugeVec
     }
 }
 
+/// An infallible handle to one [`GaugeF64Vec`] series.
+///
+/// If the requested label block did not fit or the collection was full, this
+/// handle is a sink: updates are no-ops and [`get`](Self::get) returns zero.
+#[cfg(feature = "float")]
+#[derive(Debug, Clone, Copy)]
+pub struct GaugeF64Series<'a> {
+    gauge: Option<&'a GaugeF64>,
+}
+
+#[cfg(feature = "float")]
+impl GaugeF64Series<'_> {
+    fn metric(gauge: &GaugeF64) -> GaugeF64Series<'_> {
+        GaugeF64Series { gauge: Some(gauge) }
+    }
+
+    const fn sink() -> Self {
+        Self { gauge: None }
+    }
+
+    /// Set this series, or do nothing if it is a sink.
+    #[inline]
+    pub fn set(&self, value: f64) {
+        if let Some(gauge) = self.gauge {
+            gauge.set(value);
+        }
+    }
+
+    /// Add `delta` to this series, or do nothing if it is a sink.
+    #[inline]
+    pub fn add(&self, delta: f64) {
+        if let Some(gauge) = self.gauge {
+            gauge.add(delta);
+        }
+    }
+
+    /// Subtract `delta` from this series, or do nothing if it is a sink.
+    #[inline]
+    pub fn sub(&self, delta: f64) {
+        self.add(-delta);
+    }
+
+    /// Increment this series by 1, or do nothing if it is a sink.
+    #[inline]
+    pub fn inc(&self) {
+        self.add(1.0);
+    }
+
+    /// Decrement this series by 1, or do nothing if it is a sink.
+    #[inline]
+    pub fn dec(&self) {
+        self.add(-1.0);
+    }
+
+    /// Return the current value, or zero if this is a sink.
+    #[inline]
+    pub fn get(&self) -> f64 {
+        self.gauge.map_or(0.0, GaugeF64::get)
+    }
+}
+
+/// A labeled `f64` gauge collection with at most `N` distinct label-value
+/// combinations, `K` label names, and a rendered label-block byte budget `V`.
+///
+/// Prefer [`GaugeVec`] unless a fractional value is genuinely needed.
+#[cfg(feature = "float")]
+pub struct GaugeF64Vec<const N: usize, const K: usize = 1, const V: usize = LABEL_VALUE_LEN> {
+    names: &'static [&'static str; K],
+    keys: KeyMap<N, V>,
+    vals: [GaugeF64; N],
+}
+
+#[cfg(feature = "float")]
+impl<const N: usize, const K: usize, const V: usize> GaugeF64Vec<N, K, V> {
+    /// Create an empty labeled `f64` gauge collection with the given distinct,
+    /// valid Prometheus label names. Invalid or duplicate names panic,
+    /// including during const evaluation.
+    pub const fn new(names: &'static [&'static str; K]) -> Self {
+        validate_label_names(names, false);
+        Self {
+            names,
+            keys: Mutex::new(RefCell::new(heapless::Vec::new())),
+            vals: [const { GaugeF64::new(0.0) }; N],
+        }
+    }
+
+    /// The series for `values`, creating it if not already present. See
+    /// [`CounterVec::with`] for the capacity/length failure behavior and the
+    /// cached-handle hot-path pattern.
+    pub fn with(&self, values: &[&str; K]) -> GaugeF64Series<'_> {
+        match slot_index(&self.keys, self.names, values) {
+            Some(idx) => GaugeF64Series::metric(&self.vals[idx]),
+            None => GaugeF64Series::sink(),
+        }
+    }
+
+    /// Set the series for `values`. This performs a label lookup on every call
+    /// and routes rejected label blocks to a sink.
+    #[inline]
+    pub fn set(&self, values: &[&str; K], v: f64) {
+        self.with(values).set(v);
+    }
+
+    /// Add `d` to the series for `values`. This performs a label lookup on
+    /// every call and routes rejected label blocks to a sink.
+    #[inline]
+    pub fn add(&self, values: &[&str; K], d: f64) {
+        self.with(values).add(d);
+    }
+
+    /// Number of distinct label-value combinations currently recorded.
+    pub fn series_count(&self) -> usize {
+        series_count_of(&self.keys)
+    }
+}
+
+#[cfg(feature = "float")]
+impl<const N: usize, const K: usize, const V: usize> ErasedGaugeVec for GaugeF64Vec<N, K, V> {
+    fn series_count(&self) -> usize {
+        GaugeF64Vec::series_count(self)
+    }
+    fn write_labels(&self, s: usize, out: &mut dyn fmt::Write) -> fmt::Result {
+        write_labels_at(&self.keys, s, out)
+    }
+    fn value(&self, s: usize) -> Value {
+        Value::F64(self.vals[s].get())
+    }
+}
+
 #[derive(Clone, Copy)]
 struct IntHistMetric<'a> {
     bounds: &'static [u64],
@@ -433,9 +570,11 @@ pub struct IntHistogramVec<
 impl<const N: usize, const B: usize, const K: usize, const V: usize> IntHistogramVec<N, B, K, V> {
     /// Create an empty labeled histogram collection with distinct, valid
     /// Prometheus label names and strictly increasing bucket upper bounds.
-    /// The name `le` is reserved for generated bucket labels. Invalid names,
-    /// duplicate names, reserved names, and invalid bounds panic, including
-    /// during const evaluation.
+    /// `K` must be greater than zero; unlabeled histograms use
+    /// [`crate::IntHistogram`]. The name `le` is reserved for generated
+    /// bucket labels. Invalid names, duplicate names, reserved names, empty
+    /// label lists, and invalid bounds panic, including during const
+    /// evaluation.
     pub const fn new(names: &'static [&'static str; K], bounds: &'static [u64]) -> Self {
         validate_label_names(names, true);
         validate_u64_bounds::<B>(bounds);
@@ -609,9 +748,10 @@ pub struct HistogramVec<
 impl<const N: usize, const B: usize, const K: usize, const V: usize> HistogramVec<N, B, K, V> {
     /// Create an empty labeled histogram collection with distinct, valid
     /// Prometheus label names and strictly increasing, finite bucket upper
-    /// bounds. The name `le` is reserved for generated bucket labels. Invalid
-    /// names, duplicate names, reserved names, and invalid bounds panic,
-    /// including during const evaluation.
+    /// bounds. `K` must be greater than zero; unlabeled histograms use
+    /// [`crate::Histogram`]. The name `le` is reserved for generated bucket
+    /// labels. Invalid names, duplicate names, reserved names, empty label
+    /// lists, and invalid bounds panic, including during const evaluation.
     pub const fn new(names: &'static [&'static str; K], bounds: &'static [f64]) -> Self {
         validate_label_names(names, true);
         validate_f64_bounds::<B>(bounds);
@@ -798,6 +938,39 @@ mod tests {
         assert_eq!(gv.series_count(), 1);
     }
 
+    #[cfg(feature = "float")]
+    #[test]
+    fn gauge_f64_vec_creates_and_sets_series() {
+        let gv: GaugeF64Vec<4> = GaugeF64Vec::new(&PEER);
+        gv.set(&["ap-1"], 10.5);
+        gv.add(&["ap-1"], -3.0);
+        gv.set(&["ap-2"], 5.25);
+
+        let ap1 = gv.with(&["ap-1"]);
+        ap1.sub(0.5);
+        ap1.inc();
+        ap1.dec();
+
+        assert_eq!(ap1.get().to_bits(), 7.0_f64.to_bits());
+        assert_eq!(gv.with(&["ap-2"]).get().to_bits(), 5.25_f64.to_bits());
+        assert_eq!(gv.series_count(), 2);
+    }
+
+    #[cfg(feature = "float")]
+    #[test]
+    fn gauge_f64_vec_returns_zero_reading_sink_when_full() {
+        let gv: GaugeF64Vec<1> = GaugeF64Vec::new(&PEER);
+        gv.set(&["ap-1"], 7.0);
+
+        let sink = gv.with(&["ap-2"]);
+        sink.set(99.0);
+        sink.add(1.0);
+
+        assert_eq!(sink.get().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(gv.with(&["ap-1"]).get().to_bits(), 7.0_f64.to_bits());
+        assert_eq!(gv.series_count(), 1);
+    }
+
     #[test]
     fn int_histogram_vec_tracks_independent_series() {
         let hv: IntHistogramVec<4, 2> = IntHistogramVec::new(&PEER, &[100, 1000]);
@@ -855,6 +1028,12 @@ mod tests {
         let _ = IntHistogramVec::<1, 1>::new(&["le"], &[100]);
     }
 
+    #[test]
+    #[should_panic(expected = "histogram vectors require at least one label")]
+    fn int_histogram_vec_requires_at_least_one_label() {
+        let _ = IntHistogramVec::<1, 1, 0>::new(&[], &[100]);
+    }
+
     #[cfg(feature = "float")]
     #[test]
     fn histogram_vec_tracks_independent_series() {
@@ -876,6 +1055,13 @@ mod tests {
         assert_eq!(hv.bucket(0, 1), 0);
         assert_eq!(hv.total_count(0), 1);
         assert!(matches!(hv.sum(0), Value::F64(sum) if sum.is_nan()));
+    }
+
+    #[cfg(feature = "float")]
+    #[test]
+    #[should_panic(expected = "histogram vectors require at least one label")]
+    fn histogram_vec_requires_at_least_one_label() {
+        let _ = HistogramVec::<1, 1, 0>::new(&[], &[0.5]);
     }
 
     #[cfg(feature = "float")]

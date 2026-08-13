@@ -51,7 +51,8 @@ pub trait ErasedCounterVec: Sync {
     fn value(&self, s: usize) -> u64;
 }
 
-/// Object-safe view over a labeled gauge collection ([`crate::vec::GaugeVec`]).
+/// Object-safe view over a labeled gauge collection ([`crate::vec::GaugeVec`]
+/// or, with the `float` feature, [`crate::vec::GaugeF64Vec`]).
 #[doc(hidden)]
 pub trait ErasedGaugeVec: Sync {
     /// Number of distinct label-value combinations currently recorded.

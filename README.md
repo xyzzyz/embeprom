@@ -29,7 +29,7 @@ through their APIs. `embeprom` is built around those constraints:
   group via dynamic dispatch and streams Prometheus text format out, without
   the exporter knowing any crate's concrete metrics type.
 - **Bounded cardinality.** Labeled metrics (`CounterVec`, `GaugeVec`,
-  `HistogramVec`) declare their maximum number of distinct label
+  `GaugeF64Vec`, `HistogramVec`) declare their maximum number of distinct label
   combinations as a const generic; once full, new combinations use
   unrendered no-op sink handles and existing series keep updating — never a
   heap-exhaustion surprise or a required error branch.
@@ -209,7 +209,7 @@ and there is no heap to grow into. Sink reads return zero and sink values
 never appear in a scrape.
 
 **Int/float metric types are split on purpose.** `Counter` is always `u64`;
-`Gauge`/`Histogram` have separate `GaugeF64`/`Histogram<B>` (float) and
+`Gauge`/`Histogram` have separate `GaugeF64`/`GaugeF64Vec`/`Histogram<B>` (float) and
 integer-backed defaults, gated behind the `float` feature. This isn't
 parity with the Prometheus wire format (which is float64-only) — it's that
 `u64`/`i64` atomics are native on Cortex-M while `f64` atomics need a
@@ -236,7 +236,7 @@ section of the crate docs for the full example.
 
 | Feature | Effect |
 |---|---|
-| `float` (default) | `f64`-backed `GaugeF64`, `Histogram`, `HistogramVec`. Disable on firmware that never needs floats to skip `f64` atomics/formatting. |
+| `float` (default) | `f64`-backed `GaugeF64`, `GaugeF64Vec`, `Histogram`, `HistogramVec`. Disable on firmware that never needs floats to skip `f64` atomics/formatting. |
 | `cs-atomics` | Route 64-bit atomics through `critical-section` instead of native CAS. Required on targets without 64-bit atomic CAS, e.g. `thumbv6m-none-eabi` (Cortex-M0). |
 | `consistent-histograms` | Serialize scalar and vector histogram observations, then copy each series into renderer-owned scratch under one brief critical section. All `_bucket`/`_sum`/`_count` lines come from that immutable snapshot; scratch defaults to `MAX_HISTOGRAM_BUCKETS` finite buckets and is tunable per renderer. |
 | `log` | Log via the `log` crate (once per metric group, not per write) if a group fails to self-register because the registry is full. |
