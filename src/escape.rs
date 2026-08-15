@@ -11,27 +11,41 @@
 use core::fmt::{self, Write};
 
 /// Escape a label value per the exposition format: `\` -> `\\`, `"` -> `\"`, LF -> `\n`.
-pub fn write_escaped_label_value(out: &mut dyn Write, s: &str) -> fmt::Result {
-    for c in s.chars() {
-        match c {
-            '\\' => out.write_str("\\\\")?,
-            '"' => out.write_str("\\\"")?,
-            '\n' => out.write_str("\\n")?,
-            c => out.write_char(c)?,
-        }
-    }
-    Ok(())
+pub fn write_escaped_label_value<W: Write + ?Sized>(out: &mut W, s: &str) -> fmt::Result {
+    write_escaped::<true, _>(out, s)
 }
 
 /// Escape HELP text per the exposition format: `\` -> `\\`, LF -> `\n`. Quotes are
 /// not escaped in HELP text.
-pub fn write_escaped_help(out: &mut dyn Write, s: &str) -> fmt::Result {
-    for c in s.chars() {
-        match c {
-            '\\' => out.write_str("\\\\")?,
-            '\n' => out.write_str("\\n")?,
-            c => out.write_char(c)?,
+pub fn write_escaped_help<W: Write + ?Sized>(out: &mut W, s: &str) -> fmt::Result {
+    write_escaped::<false, _>(out, s)
+}
+
+/// Copy ordinary text in runs, only breaking the input around bytes that need
+/// escaping. All escaped bytes are ASCII and therefore occur at UTF-8 code
+/// point boundaries, so the slices below are always valid strings.
+fn write_escaped<const ESCAPE_QUOTES: bool, W: Write + ?Sized>(
+    out: &mut W,
+    s: &str,
+) -> fmt::Result {
+    let mut run_start = 0;
+    for (i, byte) in s.bytes().enumerate() {
+        let escape = match byte {
+            b'\\' => Some("\\\\"),
+            b'\n' => Some("\\n"),
+            b'"' if ESCAPE_QUOTES => Some("\\\""),
+            _ => None,
+        };
+        if let Some(escape) = escape {
+            if run_start < i {
+                out.write_str(&s[run_start..i])?;
+            }
+            out.write_str(escape)?;
+            run_start = i + 1;
         }
+    }
+    if run_start < s.len() {
+        out.write_str(&s[run_start..])?;
     }
     Ok(())
 }
@@ -112,6 +126,7 @@ mod tests {
         assert_eq!(escaped_value("has\"quote"), "has\\\"quote");
         assert_eq!(escaped_value("multi\nline"), "multi\\nline");
         assert_eq!(escaped_value("\\\"\n"), "\\\\\\\"\\n");
+        assert_eq!(escaped_value("café ☃ 日本語"), "café ☃ 日本語");
     }
 
     #[test]
@@ -120,6 +135,7 @@ mod tests {
         assert_eq!(escaped_help("back\\slash"), "back\\\\slash");
         assert_eq!(escaped_help("has\"quote"), "has\"quote");
         assert_eq!(escaped_help("multi\nline"), "multi\\nline");
+        assert_eq!(escaped_help("café ☃ 日本語"), "café ☃ 日本語");
     }
 
     #[test]
