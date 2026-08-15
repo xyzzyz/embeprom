@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-14
+
+### Changed
+
+- Label and help-text escaping now writes ordinary UTF-8 spans in bulk instead
+  of passing them through `fmt::Write` one byte at a time.
+- Metric-vector label lookup now uses a sampled-value fingerprint and a sorted
+  binary-search index. Fingerprint collisions still fall back to exact rendered
+  label comparison, and series slots remain in insertion order. The index adds
+  roughly `N * (size_of::<u32>() + size_of::<usize>())` bytes plus possible
+  alignment padding to each metric vector (512 bytes for 64 slots on 32-bit
+  targets, or 768 bytes on 64-bit targets).
+
 ## [0.2.0] - 2026-08-12
 
 ### Added
@@ -50,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional floating-point metrics, critical-section atomics, coherent
   histogram snapshots, logging, and capacity features.
 
-[Unreleased]: https://github.com/xyzzyz/embeprom/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/xyzzyz/embeprom/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/xyzzyz/embeprom/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/xyzzyz/embeprom/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/xyzzyz/embeprom/releases/tag/v0.1.0
