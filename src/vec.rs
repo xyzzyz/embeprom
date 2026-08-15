@@ -33,7 +33,48 @@ use crate::series::HistSeries;
 use crate::series::IntHistSeries;
 use crate::value::Value;
 
-type KeyMap<const N: usize, const V: usize> = Mutex<RefCell<heapless::Vec<LabelBlock<V>, N>>>;
+struct KeyMapState<const N: usize, const V: usize> {
+    // Slots stay in insertion order because metric values refer to them by index.
+    blocks: heapless::Vec<LabelBlock<V>, N>,
+    fingerprints: [u32; N],
+    // Indices into `blocks`, sorted by (fingerprint, rendered label block).
+    sorted_slots: [usize; N],
+}
+
+impl<const N: usize, const V: usize> KeyMapState<N, V> {
+    const fn new() -> Self {
+        Self {
+            blocks: heapless::Vec::new(),
+            fingerprints: [0; N],
+            sorted_slots: [0; N],
+        }
+    }
+}
+
+type KeyMap<const N: usize, const V: usize> = Mutex<RefCell<KeyMapState<N, V>>>;
+
+fn label_fingerprint(values: &[&str]) -> u32 {
+    fn pair_at(bytes: &[u8], offset: usize) -> u32 {
+        bytes.get(offset).copied().map_or(0, u32::from)
+            | bytes.get(offset + 1).copied().map_or(0, u32::from) << 8
+    }
+
+    // This is only a cheap discriminator for the sorted index, not a
+    // correctness hash. A matching fingerprint is always followed by an
+    // exact comparison of the rendered label block.
+    let mut fingerprint = 0x811c_9dc5_u32;
+    for value in values {
+        let bytes = value.as_bytes();
+        let first = pair_at(bytes, 0);
+        let middle = pair_at(bytes, bytes.len().saturating_sub(1) / 2);
+        let last = pair_at(bytes, bytes.len().saturating_sub(2));
+        let sample = first ^ middle.rotate_left(11) ^ last.rotate_left(22);
+        let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+        fingerprint ^= sample ^ len.wrapping_mul(0x9e37_79b1);
+        fingerprint = fingerprint.rotate_left(13).wrapping_mul(0x85eb_ca6b);
+    }
+    fingerprint
+}
 
 const fn str_eq(a: &str, b: &str) -> bool {
     let a = a.as_bytes();
@@ -87,12 +128,26 @@ fn slot_index<const N: usize, const K: usize, const V: usize>(
     values: &[&str; K],
 ) -> Option<usize> {
     let block = build_block::<K, V>(names, values).ok()?;
+    let fingerprint = label_fingerprint(values);
     critical_section::with(|cs| {
         let mut keys = keys.borrow_ref_mut(cs);
-        if let Some(i) = keys.iter().position(|k| *k == block) {
-            return Some(i);
+        let len = keys.blocks.len();
+        let result = keys.sorted_slots[..len].binary_search_by(|slot| {
+            keys.fingerprints[*slot]
+                .cmp(&fingerprint)
+                .then_with(|| keys.blocks[*slot].as_str().cmp(block.as_str()))
+        });
+        match result {
+            Ok(position) => Some(keys.sorted_slots[position]),
+            Err(position) if len < N => {
+                keys.blocks.push(block).ok()?;
+                keys.fingerprints[len] = fingerprint;
+                keys.sorted_slots.copy_within(position..len, position + 1);
+                keys.sorted_slots[position] = len;
+                Some(len)
+            }
+            Err(_) => None,
         }
-        keys.push(block).ok().map(|()| keys.len() - 1)
     })
 }
 
@@ -101,12 +156,12 @@ fn write_labels_at<const N: usize, const V: usize>(
     s: usize,
     out: &mut dyn fmt::Write,
 ) -> fmt::Result {
-    let block = critical_section::with(|cs| keys.borrow_ref(cs)[s].clone());
+    let block = critical_section::with(|cs| keys.borrow_ref(cs).blocks[s].clone());
     out.write_str(&block)
 }
 
 fn series_count_of<const N: usize, const V: usize>(keys: &KeyMap<N, V>) -> usize {
-    critical_section::with(|cs| keys.borrow_ref(cs).len())
+    critical_section::with(|cs| keys.borrow_ref(cs).blocks.len())
 }
 
 /// An infallible handle to one [`CounterVec`] series.
@@ -241,7 +296,7 @@ impl<const N: usize, const K: usize, const V: usize> CounterVec<N, K, V> {
         validate_label_names(names, false);
         Self {
             names,
-            keys: Mutex::new(RefCell::new(heapless::Vec::new())),
+            keys: Mutex::new(RefCell::new(KeyMapState::new())),
             vals: [const { Counter::new() }; N],
         }
     }
@@ -315,7 +370,7 @@ impl<const N: usize, const K: usize, const V: usize> GaugeVec<N, K, V> {
         validate_label_names(names, false);
         Self {
             names,
-            keys: Mutex::new(RefCell::new(heapless::Vec::new())),
+            keys: Mutex::new(RefCell::new(KeyMapState::new())),
             vals: [const { Gauge::new(0) }; N],
         }
     }
@@ -449,7 +504,7 @@ impl<const N: usize, const K: usize, const V: usize> GaugeF64Vec<N, K, V> {
         validate_label_names(names, false);
         Self {
             names,
-            keys: Mutex::new(RefCell::new(heapless::Vec::new())),
+            keys: Mutex::new(RefCell::new(KeyMapState::new())),
             vals: [const { GaugeF64::new(0.0) }; N],
         }
     }
@@ -528,7 +583,7 @@ impl<const N: usize, const B: usize, const K: usize, const V: usize> IntHistogra
         Self {
             names,
             bounds,
-            keys: Mutex::new(RefCell::new(heapless::Vec::new())),
+            keys: Mutex::new(RefCell::new(KeyMapState::new())),
             buckets: [const { [const { AtomicU64::new(0) }; B] }; N],
             sums: [const { AtomicU64::new(0) }; N],
             counts: [const { AtomicU64::new(0) }; N],
@@ -646,7 +701,7 @@ impl<const N: usize, const B: usize, const K: usize, const V: usize> HistogramVe
         Self {
             names,
             bounds,
-            keys: Mutex::new(RefCell::new(heapless::Vec::new())),
+            keys: Mutex::new(RefCell::new(KeyMapState::new())),
             buckets: [const { [const { AtomicU64::new(0) }; B] }; N],
             sums: [const { portable_atomic::AtomicF64::new(0.0) }; N],
             counts: [const { AtomicU64::new(0) }; N],
@@ -760,6 +815,43 @@ mod tests {
         assert_eq!(cv.with(&["timeout"]).get(), 3);
         assert_eq!(cv.with(&["auth_fail"]).get(), 1);
         assert_eq!(labels_of(&cv, 0), "reason=\"timeout\"");
+    }
+
+    #[test]
+    fn sorted_lookup_preserves_insertion_order_slots() {
+        let cv: CounterVec<4> = CounterVec::new(&REASON);
+        let values = ["zz", "aa", "mm", "00"];
+        let rendered = [
+            "reason=\"zz\"",
+            "reason=\"aa\"",
+            "reason=\"mm\"",
+            "reason=\"00\"",
+        ];
+        for (i, value) in values.iter().enumerate() {
+            cv.inc_by(&[*value], (i + 1) as u64);
+        }
+
+        for i in (0..values.len()).rev() {
+            assert_eq!(cv.with(&[values[i]]).get(), (i + 1) as u64);
+            assert_eq!(labels_of(&cv, i), rendered[i]);
+        }
+    }
+
+    #[test]
+    fn fingerprint_collisions_fall_back_to_exact_label_comparison() {
+        let first = "aa11bbaacc";
+        let second = "aa00bbaacc";
+        assert_eq!(label_fingerprint(&[first]), label_fingerprint(&[second]));
+
+        let cv: CounterVec<2> = CounterVec::new(&REASON);
+        cv.inc_by(&[first], 1);
+        cv.inc_by(&[second], 2);
+
+        assert_eq!(cv.series_count(), 2);
+        assert_eq!(cv.with(&[first]).get(), 1);
+        assert_eq!(cv.with(&[second]).get(), 2);
+        assert_eq!(labels_of(&cv, 0), "reason=\"aa11bbaacc\"");
+        assert_eq!(labels_of(&cv, 1), "reason=\"aa00bbaacc\"");
     }
 
     #[test]
